@@ -68,10 +68,10 @@ import Papa from "papaparse";
 const [DATA, setData] = useState([]);
 
 useEffect(() => {
-  Papa.parse("/fixed_output.csv", {
-    header: true,
-    dynamicTyping: true,
-    download: true,
+  Papa.parse(process.env.REACT_APP_DATA_URL, {
+  header: true,
+  dynamicTyping: true,
+  download: true,
     complete: (results) => {
       const cleaned = results.data
         .filter(row => row.timestamp) // drop empty rows
