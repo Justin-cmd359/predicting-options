@@ -1,0 +1,10 @@
+{
+  "files": {
+    "main.js": "/predicting-options/static/js/main.4fa1d000.js",
+    "index.html": "/predicting-options/index.html",
+    "main.4fa1d000.js.map": "/predicting-options/static/js/main.4fa1d000.js.map"
+  },
+  "entrypoints": [
+    "static/js/main.4fa1d000.js"
+  ]
+}
