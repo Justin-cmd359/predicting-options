@@ -10,7 +10,7 @@ import {
 
 // ── CSV Data URL ──────────────────────────────────────────────────────────────
 // Replace this with your Cloudflare R2 public URL after uploading fixed_output.csv
-const CSV_URL = "https://pub-73edacec404b41a29ac6cf15672e387f.r2.dev";
+const CSV_URL = "https://pub-73edacec404b41a29ac6cf15672e387f.r2.dev/fixed_output.csv";
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 const C = {
