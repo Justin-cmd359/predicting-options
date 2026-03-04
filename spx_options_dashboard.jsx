@@ -68,7 +68,7 @@ import Papa from "papaparse";
 const [DATA, setData] = useState([]);
 
 useEffect(() => {
-  Papa.parse(process.env.BLOB_READ_WRITE_TOKEN, {
+  Papa.parse("https://pub-73edacec404b41a29ac6cf15672e387f.r2.dev", {
   header: true,
   dynamicTyping: true,
   download: true,
