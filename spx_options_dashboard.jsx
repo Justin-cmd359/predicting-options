@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import Papa from "papaparse";
 import {
   LineChart, Line, BarChart, Bar, RadarChart, Radar,
   PolarGrid, PolarAngleAxis, PolarRadiusAxis,
@@ -6,105 +7,10 @@ import {
   ResponsiveContainer, ScatterChart, Scatter, Cell,
   ReferenceLine, Area, AreaChart, ComposedChart
 } from "recharts";
-import Papa from "papaparse";
 
-// ── Synthetic data generator ──────────────────────────────────────────────────
-// function generateData(n = 40) {
-//   const rows = [];
-//   let esPrice = 5250;
-//   let spxPrice = 5255;
-//   const strike = 5250;
-//   const baseTime = new Date("2024-03-15T09:30:00");
-
-//   for (let i = 0; i < n; i++) {
-//     esPrice += (Math.random() - 0.48) * 4;
-//     spxPrice = esPrice + 5 + (Math.random() - 0.5) * 2;
-//     const t = 0.05 - i * 0.001;
-//     const moneyness = spxPrice - strike;
-//     const iv = 0.18 + Math.random() * 0.04;
-
-//     const callDelta = 0.5 + moneyness * 0.012 + (Math.random() - 0.5) * 0.02;
-//     const putDelta = callDelta - 1;
-//     const gamma = 0.08 - Math.abs(moneyness) * 0.002 + (Math.random() - 0.5) * 0.005;
-//     const vega = 15 - Math.abs(moneyness) * 0.1 + (Math.random() - 0.5) * 1;
-//     const callTheta = -(0.8 + Math.random() * 0.3);
-//     const putTheta = -(0.75 + Math.random() * 0.3);
-//     const vanna = moneyness * -0.003 + (Math.random() - 0.5) * 0.01;
-//     const charm = (Math.random() - 0.5) * 0.05;
-//     const vomma = (Math.random() - 0.5) * 2;
-
-//     const mbo_ps = Math.random() > 0.5 ? 1 : -1;
-//     const mboLevels = Array.from({ length: 14 }, (_, j) =>
-//       Math.round((Math.random() - 0.4) * 500 * (1 - j * 0.05))
-//     );
-
-//     const ts = new Date(baseTime.getTime() + i * 60000);
-//     rows.push({
-//       timestamp: ts.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
-//       index: i,
-//       esPrice: +esPrice.toFixed(2),
-//       spxPrice: +spxPrice.toFixed(2),
-//       strike,
-//       t: +t.toFixed(4),
-//       side: Math.random() > 0.5 ? "BUY" : "SELL",
-//       mbo_ps,
-//       callDelta: +callDelta.toFixed(4),
-//       putDelta: +putDelta.toFixed(4),
-//       gamma: +gamma.toFixed(5),
-//       vega: +vega.toFixed(3),
-//       callTheta: +callTheta.toFixed(4),
-//       putTheta: +putTheta.toFixed(4),
-//       vanna: +vanna.toFixed(5),
-//       charm: +charm.toFixed(5),
-//       vomma: +vomma.toFixed(3),
-//       callRho: +(0.05 + Math.random() * 0.02).toFixed(4),
-//       putRho: +(-0.05 - Math.random() * 0.02).toFixed(4),
-//       ...Object.fromEntries(mboLevels.map((v, j) => [`mbo${j + 1}`, v])),
-//     });
-//   }
-//   return rows;
-// }
-
-const [DATA, setData] = useState([]);
-
-useEffect(() => {
-  Papa.parse("https://pub-73edacec404b41a29ac6cf15672e387f.r2.dev", {
-  header: true,
-  dynamicTyping: true,
-  download: true,
-    complete: (results) => {
-      const cleaned = results.data
-        .filter(row => row.timestamp) // drop empty rows
-        .map(row => ({
-          timestamp: row.timestamp,
-          index: row.index,
-          esPrice: row.current_es_price,
-          spxPrice: row.spx_price,
-          strike: row.spx_strike,
-          t: row.t,
-          side: row.Side,
-          mbo_ps: row.MBO_pulling_stacking,
-          callDelta: row.call_delta,
-          putDelta: row.put_delta,
-          gamma: row.call_gamma,
-          vega: row.call_vega,
-          callTheta: row.call_theta,
-          putTheta: row.put_theta,
-          vanna: row.call_vanna,
-          charm: row.call_charm,
-          vomma: row.call_vomma,
-          callRho: row.call_rho,
-          putRho: row.put_rho,
-          ...Object.fromEntries(
-            Array.from({ length: 14 }, (_, i) => [`mbo${i + 1}`, row[`MBO_${i + 1}`]])
-          ),
-        }));
-      setData(cleaned);
-    },
-  });
-}, []);
-
-// const DATA = generateData(40);
+// ── CSV Data URL ──────────────────────────────────────────────────────────────
+// Replace this with your Cloudflare R2 public URL after uploading fixed_output.csv
+const CSV_URL = "https://pub-73edacec404b41a29ac6cf15672e387f.r2.dev";
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 const C = {
@@ -186,6 +92,59 @@ function CustomTooltip({ active, payload, label }) {
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState("overview");
   const [hoveredIdx, setHoveredIdx] = useState(null);
+  const [DATA, setData] = useState([]);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    Papa.parse(CSV_URL, {
+      header: true,
+      dynamicTyping: true,
+      download: true,
+      complete: (results) => {
+        const cleaned = results.data
+          .filter(row => row.timestamp)
+          .map((row, i) => ({
+            timestamp: row.timestamp,
+            index: i,
+            esPrice: row.current_es_price,
+            spxPrice: row.spx_price,
+            strike: row.spx_strike,
+            t: row.t,
+            side: row.Side,
+            mbo_ps: row.MBO_pulling_stacking,
+            callDelta: row.call_delta,
+            putDelta: row.put_delta,
+            gamma: row.call_gamma,
+            vega: row.call_vega,
+            callTheta: row.call_theta,
+            putTheta: row.put_theta,
+            vanna: row.call_vanna,
+            charm: row.call_charm,
+            vomma: row.call_vomma,
+            callRho: row.call_rho,
+            putRho: row.put_rho,
+            ...Object.fromEntries(
+              Array.from({ length: 14 }, (_, j) => [`mbo${j + 1}`, row[`MBO_${j + 1}`]])
+            ),
+          }));
+        setData(cleaned);
+      },
+      error: (err) => setError(err.message),
+    });
+  }, []);
+
+  if (error) return (
+    <div style={{ color: C.sell, padding: 40, fontFamily: "monospace" }}>
+      ✕ Failed to load data: {error}
+    </div>
+  );
+
+  if (!DATA.length) return (
+    <div style={{ color: C.accent1, padding: 40, fontFamily: "monospace", background: C.bg, minHeight: "100vh" }}>
+      ◈ Loading data...
+    </div>
+  );
+
   const latest = DATA[DATA.length - 1];
 
   const tabs = ["overview", "greeks", "microstructure", "order book"];
