@@ -127,7 +127,11 @@ export default function Dashboard() {
               Array.from({ length: 14 }, (_, j) => [`mbo${j + 1}`, row[`MBO_${j + 1}`]])
             ),
           }));
-        setData(cleaned);
+          // Sample down to 1000 evenly-spaced rows for rendering
+        const step = Math.max(1, Math.floor(cleaned.length / 1000));
+        const sampled = cleaned.filter((_, i) => i % step === 0);
+        setData(sampled);
+        // setData(cleaned);
       },
       error: (err) => setError(err.message),
     });
