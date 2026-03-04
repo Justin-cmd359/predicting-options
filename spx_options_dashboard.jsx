@@ -68,7 +68,7 @@ import Papa from "papaparse";
 const [DATA, setData] = useState([]);
 
 useEffect(() => {
-  Papa.parse(process.env.REACT_APP_DATA_URL, {
+  Papa.parse(process.env.BLOB_READ_WRITE_TOKEN, {
   header: true,
   dynamicTyping: true,
   download: true,
