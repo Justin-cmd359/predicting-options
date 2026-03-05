@@ -95,48 +95,102 @@ export default function Dashboard() {
   const [DATA, setData] = useState([]);
   const [error, setError] = useState(null);
 
+  // useEffect(() => {
+  //   Papa.parse(CSV_URL, {
+  //     header: true,
+  //     dynamicTyping: true,
+  //     download: true,
+  //     complete: (results) => {
+  //       const cleaned = results.data
+  //         .filter(row => row.timestamp)
+  //         .map((row, i) => ({
+  //           timestamp: row.timestamp,
+  //           index: i,
+  //           esPrice: row.current_es_price,
+  //           spxPrice: row.spx_price,
+  //           strike: row.spx_strike,
+  //           t: row.t,
+  //           side: row.Side,
+  //           mbo_ps: row.MBO_pulling_stacking,
+  //           callDelta: row.call_delta,
+  //           putDelta: row.put_delta,
+  //           gamma: row.call_gamma,
+  //           vega: row.call_vega,
+  //           callTheta: row.call_theta,
+  //           putTheta: row.put_theta,
+  //           vanna: row.call_vanna,
+  //           charm: row.call_charm,
+  //           vomma: row.call_vomma,
+  //           callRho: row.call_rho,
+  //           putRho: row.put_rho,
+  //           ...Object.fromEntries(
+  //             Array.from({ length: 14 }, (_, j) => [`mbo${j + 1}`, row[`MBO_${j + 1}`]])
+  //           ),
+  //         }));
+  //         // Sample down to 1000 evenly-spaced rows for rendering
+  //       const step = Math.max(1, Math.floor(cleaned.length / 1000));
+  //       const sampled = cleaned.filter((_, i) => i % step === 0);
+  //       setData(sampled);
+  //       // setData(cleaned);
+  //     },
+  //     error: (err) => setError(err.message),
+  //   });
+  // }, []);
   useEffect(() => {
-    Papa.parse(CSV_URL, {
-      header: true,
-      dynamicTyping: true,
-      download: true,
-      complete: (results) => {
-        const cleaned = results.data
-          .filter(row => row.timestamp)
-          .map((row, i) => ({
-            timestamp: row.timestamp,
-            index: i,
-            esPrice: row.current_es_price,
-            spxPrice: row.spx_price,
-            strike: row.spx_strike,
-            t: row.t,
-            side: row.Side,
-            mbo_ps: row.MBO_pulling_stacking,
-            callDelta: row.call_delta,
-            putDelta: row.put_delta,
-            gamma: row.call_gamma,
-            vega: row.call_vega,
-            callTheta: row.call_theta,
-            putTheta: row.put_theta,
-            vanna: row.call_vanna,
-            charm: row.call_charm,
-            vomma: row.call_vomma,
-            callRho: row.call_rho,
-            putRho: row.put_rho,
-            ...Object.fromEntries(
-              Array.from({ length: 14 }, (_, j) => [`mbo${j + 1}`, row[`MBO_${j + 1}`]])
-            ),
-          }));
-          // Sample down to 1000 evenly-spaced rows for rendering
-        const step = Math.max(1, Math.floor(cleaned.length / 1000));
-        const sampled = cleaned.filter((_, i) => i % step === 0);
-        setData(sampled);
-        // setData(cleaned);
-      },
-      error: (err) => setError(err.message),
-    });
-  }, []);
+  const SAMPLE_SIZE = 182400; // adjust this number as needed
+  const sampled = [];
+  let totalRows = 0;
 
+  Papa.parse(CSV_URL, {
+    header: true,
+    dynamicTyping: true,
+    download: true,
+    step: (row) => {
+      totalRows++;
+      // Reservoir sampling - gives even distribution across full dataset
+      if (sampled.length < SAMPLE_SIZE) {
+        sampled.push(row.data);
+      } else {
+        const j = Math.floor(Math.random() * totalRows);
+        if (j < SAMPLE_SIZE) {
+          sampled[j] = row.data;
+        }
+      }
+    },
+    complete: () => {
+      const cleaned = sampled
+        .filter(row => row.timestamp)
+        .map((row, i) => ({
+          timestamp: row.timestamp,
+          index: i,
+          esPrice: row.current_es_price,
+          spxPrice: row.spx_price,
+          strike: row.spx_strike,
+          t: row.t,
+          side: row.Side,
+          mbo_ps: row.MBO_pulling_stacking,
+          callDelta: row.call_delta,
+          putDelta: row.put_delta,
+          gamma: row.call_gamma,
+          vega: row.call_vega,
+          callTheta: row.call_theta,
+          putTheta: row.put_theta,
+          vanna: row.call_vanna,
+          charm: row.call_charm,
+          vomma: row.call_vomma,
+          callRho: row.call_rho,
+          putRho: row.put_rho,
+          ...Object.fromEntries(
+            Array.from({ length: 14 }, (_, j) => [`mbo${j + 1}`, row[`MBO_${j + 1}`]])
+          ),
+        }));
+      // Sort by timestamp to maintain time order after reservoir sampling
+      cleaned.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+      setData(cleaned);
+    },
+    error: (err) => setError(err.message),
+  });
+  }, []);
   if (error) return (
     <div style={{ color: C.sell, padding: 40, fontFamily: "monospace" }}>
       ✕ Failed to load data: {error}
