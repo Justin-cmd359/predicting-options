@@ -147,6 +147,7 @@ export default function Dashboard() {
       dynamicTyping: true,
       download: true,
       skipEmptyLines: true,
+      delimiter: "",
       step: (row) => {
         totalRows++;
         if (sampled.length < sampleSize) {
