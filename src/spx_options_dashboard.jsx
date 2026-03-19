@@ -136,8 +136,9 @@ export default function Dashboard() {
   //     error: (err) => setError(err.message),
   //   });
   // }, []);
+  const [sampleSize, setSampleSize] = useState(5000);
   useEffect(() => {
-  const SAMPLE_SIZE = 182400; // adjust this number as needed
+  const SAMPLE_SIZE = 5000; // adjust this number as needed
   const sampled = [];
   let totalRows = 0;
 
@@ -244,7 +245,7 @@ export default function Dashboard() {
             ◈ SPX / ES Options Analytics
           </div>
           <h1 style={{ margin: 0, fontSize: 26, fontWeight: 800, color: "#fff", letterSpacing: "-0.03em" }}>
-            Strike <span style={{ color: C.accent1 }}>5250</span> Dashboard
+            S&P 500 Derivative
           </h1>
           <div style={{ fontSize: 11, color: C.textDim, marginTop: 4 }}>
             {latest.timestamp} · T = {latest.t} · {DATA.length} observations
@@ -256,6 +257,25 @@ export default function Dashboard() {
           <StatBadge label="Δ Call" value={latest.callDelta.toFixed(3)} color={C.accent3} />
           <StatBadge label="Γ" value={latest.gamma.toFixed(5)} color={C.accent5} />
         </div>
+        <select
+          value={sampleSize}
+          onChange={(e) => setSampleSize(Number(e.target.value))}
+          style={{
+            background: C.panel,
+            color: C.text,
+            border: `1px solid ${C.border}`,
+            borderRadius: 6,
+            padding: "4px 10px",
+            fontSize: 11,
+            fontFamily: "'DM Mono', monospace",
+            cursor: "pointer",
+          }}
+        >
+          <option value={1000}>1,000 rows</option>
+          <option value={5000}>5,000 rows</option>
+          <option value={10000}>10,000 rows</option>
+          <option value={50000}>50,000 rows</option>
+        </select>
       </div>
 
       {/* Tabs */}
