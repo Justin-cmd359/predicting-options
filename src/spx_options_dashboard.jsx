@@ -183,6 +183,9 @@ export default function Dashboard() {
             ),
           }));
         cleaned.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+        console.log("Total rows parsed:", totalRows);
+        console.log("Sampled rows:", sampled.length);
+        console.log("Cleaned rows:", cleaned.length);
         setData(cleaned);
       },
       error: (err) => setError(err.message),
