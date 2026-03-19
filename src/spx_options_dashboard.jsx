@@ -552,7 +552,7 @@ export default function Dashboard() {
 
       {/* Footer */}
       <div style={{ marginTop: 20, fontSize: 9, color: C.textDim, textAlign: "right", letterSpacing: "0.08em" }}>
-        SPX OPTIONS ANALYTICS · SYNTHETIC DEMO DATA · STRIKE 5250
+        SPX OPTIONS ANALYTICS · DATA PROVIDED BY DR. MOREHEAD
       </div>
     </div>
   );
