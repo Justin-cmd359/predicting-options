@@ -92,6 +92,7 @@ function CustomTooltip({ active, payload, label }) {
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState("overview");
   const [hoveredIdx, setHoveredIdx] = useState(null);
+  const [sampleSize, setSampleSize] = useState(5000);
   const [DATA, setData] = useState([]);
   const [error, setError] = useState(null);
 
@@ -136,62 +137,57 @@ export default function Dashboard() {
   //     error: (err) => setError(err.message),
   //   });
   // }, []);
-  const [sampleSize, setSampleSize] = useState(5000);
   useEffect(() => {
-  const SAMPLE_SIZE = 5000; // adjust this number as needed
-  const sampled = [];
-  let totalRows = 0;
+    setData([]);
+    const sampled = [];
+    let totalRows = 0;
 
-  Papa.parse(CSV_URL, {
-    header: true,
-    dynamicTyping: true,
-    download: true,
-    step: (row) => {
-      totalRows++;
-      // Reservoir sampling - gives even distribution across full dataset
-      if (sampled.length < SAMPLE_SIZE) {
-        sampled.push(row.data);
-      } else {
-        const j = Math.floor(Math.random() * totalRows);
-        if (j < SAMPLE_SIZE) {
-          sampled[j] = row.data;
+    Papa.parse(CSV_URL, {
+      header: true,
+      dynamicTyping: true,
+      download: true,
+      step: (row) => {
+        totalRows++;
+        if (sampled.length < sampleSize) {
+          sampled.push(row.data);
+        } else {
+          const j = Math.floor(Math.random() * totalRows);
+          if (j < sampleSize) sampled[j] = row.data;
         }
-      }
-    },
-    complete: () => {
-      const cleaned = sampled
-        .filter(row => row.timestamp)
-        .map((row, i) => ({
-          timestamp: row.timestamp,
-          index: i,
-          esPrice: row.current_es_price,
-          spxPrice: row.spx_price,
-          strike: row.spx_strike,
-          t: row.t,
-          side: row.Side,
-          mbo_ps: row.MBO_pulling_stacking,
-          callDelta: row.call_delta,
-          putDelta: row.put_delta,
-          gamma: row.call_gamma,
-          vega: row.call_vega,
-          callTheta: row.call_theta,
-          putTheta: row.put_theta,
-          vanna: row.call_vanna,
-          charm: row.call_charm,
-          vomma: row.call_vomma,
-          callRho: row.call_rho,
-          putRho: row.put_rho,
-          ...Object.fromEntries(
-            Array.from({ length: 14 }, (_, j) => [`mbo${j + 1}`, row[`MBO_${j + 1}`]])
-          ),
-        }));
-      // Sort by timestamp to maintain time order after reservoir sampling
-      cleaned.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-      setData(cleaned);
-    },
-    error: (err) => setError(err.message),
-  });
-  }, []);
+      },
+      complete: () => {
+        const cleaned = sampled
+          .filter(row => row.timestamp)
+          .map((row, i) => ({
+            timestamp: row.timestamp,
+            index: i,
+            esPrice: row.current_es_price,
+            spxPrice: row.spx_price,
+            strike: row.spx_strike,
+            t: row.t,
+            side: row.Side,
+            mbo_ps: row.MBO_pulling_stacking,
+            callDelta: row.call_delta,
+            putDelta: row.put_delta,
+            gamma: row.call_gamma,
+            vega: row.call_vega,
+            callTheta: row.call_theta,
+            putTheta: row.put_theta,
+            vanna: row.call_vanna,
+            charm: row.call_charm,
+            vomma: row.call_vomma,
+            callRho: row.call_rho,
+            putRho: row.put_rho,
+            ...Object.fromEntries(
+              Array.from({ length: 14 }, (_, j) => [`mbo${j + 1}`, row[`MBO_${j + 1}`]])
+            ),
+          }));
+        cleaned.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+        setData(cleaned);
+      },
+      error: (err) => setError(err.message),
+    });
+  }, [sampleSize]); // 👈 re-runs whenever sampleSize changes
   if (error) return (
     <div style={{ color: C.sell, padding: 40, fontFamily: "monospace" }}>
       ✕ Failed to load data: {error}
@@ -275,6 +271,8 @@ export default function Dashboard() {
           <option value={5000}>5,000 rows</option>
           <option value={10000}>10,000 rows</option>
           <option value={50000}>50,000 rows</option>
+          <option value={100000}>100,000 rows</option>
+          <option value={150000}>150,000 rows</option>
         </select>
       </div>
 
