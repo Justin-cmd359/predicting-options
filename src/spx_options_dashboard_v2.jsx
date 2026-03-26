@@ -163,28 +163,63 @@ export default function Dashboard() {
   const [sampleSize, setSampleSize] = useState(5000);
 
   useEffect(() => {
-    setData([]);
-    const sampled = [];
-    let totalRows = 0;
+    let cancelled = false;
+    const abortController = new AbortController();
 
-    Papa.parse(CSV_URL, {
-      header: true,
-      dynamicTyping: true,
-      download: true,
-      skipEmptyLines: true,
-      delimiter: ",",
-      step: (row) => {
-        totalRows++;
-        if (sampled.length < sampleSize) {
-          sampled.push(row.data);
-        } else {
-          const j = Math.floor(Math.random() * totalRows);
-          if (j < sampleSize) sampled[j] = row.data;
+    async function loadCsv() {
+      setData([]);
+      setError(null);
+
+      try {
+        const response = await fetch(CSV_URL, { signal: abortController.signal });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status} while fetching CSV`);
         }
-      },
-      complete: () => {
-        const cleaned = sampled
-          .filter(row => row.timestamp)
+
+        const text = await response.text();
+        if (cancelled) return;
+
+        const parseResult = Papa.parse(text, {
+          header: true,
+          dynamicTyping: true,
+          skipEmptyLines: "greedy",
+          delimiter: ",",
+          transformHeader: (header) => header.trim(),
+        });
+
+        if (cancelled) return;
+
+        const allRows = Array.isArray(parseResult.data) ? parseResult.data : [];
+        const validRows = allRows.filter(
+          (row) => row && typeof row === "object" && row.timestamp
+        );
+
+        if (!validRows.length) {
+          const firstError = parseResult.errors?.[0];
+          throw new Error(
+            firstError?.message || "CSV parsed, but no valid rows with a timestamp were found."
+          );
+        }
+
+        const safeSampleSize = Math.min(sampleSize, validRows.length);
+        let sampledRows = [];
+
+        if (safeSampleSize >= validRows.length) {
+          sampledRows = [...validRows];
+        } else {
+          sampledRows = [];
+          for (let i = 0; i < validRows.length; i++) {
+            const current = validRows[i];
+            if (sampledRows.length < safeSampleSize) {
+              sampledRows.push(current);
+            } else {
+              const j = Math.floor(Math.random() * (i + 1));
+              if (j < safeSampleSize) sampledRows[j] = current;
+            }
+          }
+        }
+
+        const cleaned = sampledRows
           .map((row, i) => ({
             timestamp: row.timestamp,
             index: i,
@@ -208,12 +243,36 @@ export default function Dashboard() {
             ...Object.fromEntries(
               Array.from({ length: 14 }, (_, j) => ["mbo" + (j + 1), row["MBO_" + (j + 1)]])
             ),
-          }));
-        cleaned.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-        setData(cleaned);
-      },
-      error: (err) => setError(err.message),
-    });
+          }))
+          .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+
+        console.log("Raw CSV lines:", text.split(/\r?\n/).length);
+        console.log("Papa parsed rows:", allRows.length);
+        console.log("Papa parse warnings:", parseResult.errors?.length || 0);
+        if (parseResult.errors?.length) {
+          console.log("First parse warning:", parseResult.errors[0]);
+        }
+        console.log("Valid rows with timestamp:", validRows.length);
+        console.log("Requested sample size:", sampleSize);
+        console.log("Final sampled rows:", sampledRows.length);
+        console.log("Cleaned rows:", cleaned.length);
+
+        if (!cancelled) {
+          setData(cleaned);
+        }
+      } catch (err) {
+        if (cancelled || err?.name === "AbortError") return;
+        console.error("CSV load failed:", err);
+        setError(err?.message || "Failed to load CSV data.");
+      }
+    }
+
+    loadCsv();
+
+    return () => {
+      cancelled = true;
+      abortController.abort();
+    };
   }, [sampleSize]);
 
   if (error) return (
@@ -224,7 +283,7 @@ export default function Dashboard() {
 
   if (!DATA.length) return (
     <div style={{ color: C.accent1, padding: 40, fontFamily: "monospace", background: C.bg, minHeight: "100vh" }}>
-      Loading data...
+      Loading data…
     </div>
   );
 
