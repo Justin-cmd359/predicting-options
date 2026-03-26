@@ -243,17 +243,6 @@ export default function Dashboard() {
             ...Object.fromEntries(
               Array.from({ length: 14 }, (_, j) => ["mbo" + (j + 1), row["MBO_" + (j + 1)]])
             ),
-<<<<<<< HEAD
-          }));
-        cleaned.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-        console.log("Total rows parsed:", totalRows);
-        console.log("Sampled rows:", sampled.length);
-        console.log("Cleaned rows:", cleaned.length);
-        setData(cleaned);
-      },
-      error: (err) => setError(err.message),
-    });
-=======
           }))
           .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
 
@@ -284,7 +273,6 @@ export default function Dashboard() {
       cancelled = true;
       abortController.abort();
     };
->>>>>>> c4e7f5f2251b6a429ee49ecac3645dd368f25e09
   }, [sampleSize]);
 
   if (error) return (
