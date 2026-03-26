@@ -1,8 +1,7 @@
 import { useState, useEffect } from "react";
 import Papa from "papaparse";
 import {
-  LineChart, Line, BarChart, Bar, RadarChart, Radar,
-  PolarGrid, PolarAngleAxis, PolarRadiusAxis,
+  LineChart, Line, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer, ScatterChart, Scatter, Cell,
   ReferenceLine, Area, AreaChart, ComposedChart
@@ -124,6 +123,38 @@ function CustomTooltip({ active, payload, label }) {
   );
 }
 
+
+
+function formatTimeTick(value) {
+  if (!value) return "";
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return String(value);
+
+  const hours = String(dt.getHours()).padStart(2, "0");
+  const minutes = String(dt.getMinutes()).padStart(2, "0");
+  return `${hours}:${minutes}`;
+}
+
+function getNiceTimeTicks(data, maxTicks = 7) {
+  if (!data.length) return [];
+  if (data.length <= maxTicks) return data.map(d => d.timestamp);
+
+  const ticks = [];
+  const lastIndex = data.length - 1;
+  const step = Math.max(1, Math.ceil(lastIndex / (maxTicks - 1)));
+
+  for (let i = 0; i <= lastIndex; i += step) {
+    ticks.push(data[i].timestamp);
+  }
+
+  const lastTick = data[lastIndex].timestamp;
+  if (ticks[ticks.length - 1] !== lastTick) {
+    ticks.push(lastTick);
+  }
+
+  return ticks;
+}
+
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState("overview");
@@ -205,18 +236,20 @@ export default function Dashboard() {
     value: latest["mbo" + (i + 1)],
   }));
 
-  const radarData = [
-    { greek: "Delta Call", value: Math.abs(latest.callDelta) * 100 },
-    { greek: "Delta Put",  value: Math.abs(latest.putDelta) * 100 },
-    { greek: "Gamma x1k", value: latest.gamma * 1000 },
-    { greek: "Vega/10",   value: Math.abs(latest.vega) / 10 },
-    { greek: "Vanna x1k", value: Math.abs(latest.vanna) * 1000 },
-    { greek: "Charm x1k", value: Math.abs(latest.charm) * 1000 },
-    { greek: "Vomma",     value: Math.abs(latest.vomma) },
-  ];
 
   const stackCount = DATA.filter(d => d.mbo_ps > 0).length;
   const pullCount  = DATA.length - stackCount;
+  const timeTicks = getNiceTimeTicks(DATA, 7);
+
+  const timeAxisProps = {
+    dataKey: "timestamp",
+    ticks: timeTicks,
+    tickFormatter: formatTimeTick,
+    interval: 0,
+    minTickGap: 24,
+    tickMargin: 8,
+    tick: { fill: C.textDim, fontSize: 9 },
+  };
 
   return (
     <div style={{ minHeight: "100vh", background: C.bg, color: C.text, fontFamily: "'DM Mono', 'Courier New', monospace", padding: "24px 28px", boxSizing: "border-box" }}>
@@ -283,7 +316,7 @@ export default function Dashboard() {
             <ResponsiveContainer width="100%" height={200}>
               <ComposedChart data={DATA}>
                 <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
-                <XAxis dataKey="timestamp" tick={{ fill: C.textDim, fontSize: 9 }} interval={7} />
+                <XAxis {...timeAxisProps} />
                 <YAxis domain={["auto", "auto"]} tick={{ fill: C.textDim, fontSize: 9 }} width={55} />
                 <Tooltip content={<CustomTooltip />} />
                 <Legend wrapperStyle={{ fontSize: 10, color: C.textDim }} />
@@ -294,27 +327,12 @@ export default function Dashboard() {
             </ResponsiveContainer>
           </Panel>
 
-          <Panel title="Greeks Snapshot" subtitle="Latest observation — hover ? for definitions">
-            <ResponsiveContainer width="100%" height={200}>
-              <RadarChart data={radarData}>
-                <PolarGrid stroke={C.border} />
-                <PolarAngleAxis dataKey="greek" tick={{ fill: C.textDim, fontSize: 9 }} />
-                <PolarRadiusAxis tick={{ fill: C.textDim, fontSize: 8 }} />
-                <Radar dataKey="value" stroke={C.accent1} fill={C.accent1} fillOpacity={0.15} strokeWidth={2} />
-              </RadarChart>
-            </ResponsiveContainer>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 14px", fontSize: 10 }}>
-              {["delta","gamma","vega","vanna","charm","vomma"].map(g => (
-                <GreekLabel key={g} name={g} label={g.charAt(0).toUpperCase() + g.slice(1)} />
-              ))}
-            </div>
-          </Panel>
 
           <Panel title={<GreekLabel name="delta" label="Delta Evolution" />} subtitle="Call & Put delta vs time" span={2}>
             <ResponsiveContainer width="100%" height={180}>
               <AreaChart data={DATA}>
                 <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
-                <XAxis dataKey="timestamp" tick={{ fill: C.textDim, fontSize: 9 }} interval={7} />
+                <XAxis {...timeAxisProps} />
                 <YAxis domain={[-1, 1]} tick={{ fill: C.textDim, fontSize: 9 }} width={40} />
                 <Tooltip content={<CustomTooltip />} />
                 <Legend wrapperStyle={{ fontSize: 10 }} />
@@ -360,7 +378,7 @@ export default function Dashboard() {
             <ResponsiveContainer width="100%" height={200}>
               <ComposedChart data={DATA}>
                 <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
-                <XAxis dataKey="timestamp" tick={{ fill: C.textDim, fontSize: 9 }} interval={7} />
+                <XAxis {...timeAxisProps} />
                 <YAxis yAxisId="l" tick={{ fill: C.textDim, fontSize: 9 }} width={60} />
                 <YAxis yAxisId="r" orientation="right" tick={{ fill: C.textDim, fontSize: 9 }} width={50} />
                 <Tooltip content={<CustomTooltip />} />
@@ -375,7 +393,7 @@ export default function Dashboard() {
             <ResponsiveContainer width="100%" height={180}>
               <AreaChart data={DATA}>
                 <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
-                <XAxis dataKey="timestamp" tick={{ fill: C.textDim, fontSize: 9 }} interval={7} />
+                <XAxis {...timeAxisProps} />
                 <YAxis tick={{ fill: C.textDim, fontSize: 9 }} width={55} />
                 <ReferenceLine y={0} stroke={C.muted} />
                 <Tooltip content={<CustomTooltip />} />
@@ -388,7 +406,7 @@ export default function Dashboard() {
             <ResponsiveContainer width="100%" height={180}>
               <AreaChart data={DATA}>
                 <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
-                <XAxis dataKey="timestamp" tick={{ fill: C.textDim, fontSize: 9 }} interval={7} />
+                <XAxis {...timeAxisProps} />
                 <YAxis tick={{ fill: C.textDim, fontSize: 9 }} width={55} />
                 <ReferenceLine y={0} stroke={C.muted} />
                 <Tooltip content={<CustomTooltip />} />
@@ -401,7 +419,7 @@ export default function Dashboard() {
             <ResponsiveContainer width="100%" height={180}>
               <LineChart data={DATA}>
                 <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
-                <XAxis dataKey="timestamp" tick={{ fill: C.textDim, fontSize: 9 }} interval={7} />
+                <XAxis {...timeAxisProps} />
                 <YAxis tick={{ fill: C.textDim, fontSize: 9 }} width={55} />
                 <Tooltip content={<CustomTooltip />} />
                 <Legend wrapperStyle={{ fontSize: 10 }} />
@@ -415,7 +433,7 @@ export default function Dashboard() {
             <ResponsiveContainer width="100%" height={180}>
               <BarChart data={DATA}>
                 <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
-                <XAxis dataKey="timestamp" tick={{ fill: C.textDim, fontSize: 9 }} interval={7} />
+                <XAxis {...timeAxisProps} />
                 <YAxis tick={{ fill: C.textDim, fontSize: 9 }} width={55} />
                 <ReferenceLine y={0} stroke={C.muted} />
                 <Tooltip content={<CustomTooltip />} />
@@ -430,7 +448,7 @@ export default function Dashboard() {
             <ResponsiveContainer width="100%" height={180}>
               <LineChart data={DATA}>
                 <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
-                <XAxis dataKey="timestamp" tick={{ fill: C.textDim, fontSize: 9 }} interval={7} />
+                <XAxis {...timeAxisProps} />
                 <YAxis tick={{ fill: C.textDim, fontSize: 9 }} width={55} />
                 <ReferenceLine y={0} stroke={C.muted} />
                 <Tooltip content={<CustomTooltip />} />
@@ -451,7 +469,7 @@ export default function Dashboard() {
             <ResponsiveContainer width="100%" height={160}>
               <BarChart data={DATA}>
                 <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
-                <XAxis dataKey="timestamp" tick={{ fill: C.textDim, fontSize: 9 }} interval={7} />
+                <XAxis {...timeAxisProps} />
                 <YAxis tick={{ fill: C.textDim, fontSize: 9 }} width={30} />
                 <ReferenceLine y={0} stroke={C.muted} />
                 <Tooltip content={<CustomTooltip />} />
@@ -466,7 +484,16 @@ export default function Dashboard() {
             <ResponsiveContainer width="100%" height={200}>
               <ScatterChart>
                 <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
-                <XAxis dataKey="esPrice"   name="ES Price"   tick={{ fill: C.textDim, fontSize: 9 }} label={{ value: "ES Price", fill: C.textDim, fontSize: 9, position: "insideBottom", offset: -4 }} />
+                <XAxis
+                  type="number"
+                  dataKey="esPrice"
+                  name="ES Price"
+                  tick={{ fill: C.textDim, fontSize: 9 }}
+                  tickCount={6}
+                  minTickGap={28}
+                  domain={["dataMin", "dataMax"]}
+                  label={{ value: "ES Price", fill: C.textDim, fontSize: 9, position: "insideBottom", offset: -4 }}
+                />
                 <YAxis dataKey="callDelta" name="Call Delta" tick={{ fill: C.textDim, fontSize: 9 }} width={45} />
                 <Tooltip cursor={{ stroke: C.muted }} content={<CustomTooltip />} />
                 <Scatter data={DATA} name="Observations">
@@ -534,7 +561,7 @@ export default function Dashboard() {
               <ResponsiveContainer width="100%" height={180}>
                 <LineChart data={DATA}>
                   <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
-                  <XAxis dataKey="timestamp" tick={{ fill: C.textDim, fontSize: 9 }} interval={7} />
+                  <XAxis {...timeAxisProps} />
                   <YAxis tick={{ fill: C.textDim, fontSize: 9 }} width={45} />
                   <ReferenceLine y={0} stroke={C.muted} />
                   <Tooltip content={<CustomTooltip />} />
