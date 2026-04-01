@@ -1,4 +1,5 @@
-// Version 3 reads from a parquet file
+// Version 4 reads from a parquet file and aggregates the data.
+// WIP x-axes are still messed up
 import { useState, useEffect } from "react";
 import * as duckdb from "@duckdb/duckdb-wasm";
 import {
@@ -8,8 +9,9 @@ import {
   ReferenceLine, Area, AreaChart, ComposedChart
 } from "recharts";
 
-// ── Parquet Data URL ──────────────────────────────────────────────────────────
-const PARQUET_URL = "https://pub-73edacec404b41a29ac6cf15672e387f.r2.dev/output.parquet";
+// ── Aggregated Parquet URL ────────────────────────────────────────────────────
+// Upload fixed_output_agg.parquet to your R2 bucket and update this URL
+const PARQUET_URL = "https://pub-73edacec404b41a29ac6cf15672e387f.r2.dev/output_agg.parquet";
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 const C = {
@@ -161,7 +163,6 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState("overview");
   const [DATA, setData] = useState([]);
   const [error, setError] = useState(null);
-  const [sampleSize, setSampleSize] = useState(5000);
 
   useEffect(() => {
     let cancelled = false;
@@ -170,31 +171,29 @@ export default function Dashboard() {
       setData([]);
       setError(null);
 
-      let db = null;
+      let db  = null;
       let conn = null;
 
       try {
-        // ── 1. Initialize DuckDB-WASM ─────────────────────────────────────────
+        // ── 1. Initialize DuckDB-WASM via jsDelivr CDN bundles ────────────────
         const JSDELIVR_BUNDLES = duckdb.getJsDelivrBundles();
         const bundle = await duckdb.selectBundle(JSDELIVR_BUNDLES);
 
-        const worker_url = URL.createObjectURL(
+        const workerUrl = URL.createObjectURL(
           new Blob([`importScripts("${bundle.mainWorker}");`], { type: "text/javascript" })
         );
-        const worker = new Worker(worker_url);
+        const worker = new Worker(workerUrl);
         const logger = new duckdb.ConsoleLogger();
         db = new duckdb.AsyncDuckDB(logger, worker);
         await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
-        URL.revokeObjectURL(worker_url);
+        URL.revokeObjectURL(workerUrl);
 
         if (cancelled) return;
 
-        // ── 2. Open a connection ──────────────────────────────────────────────
+        // ── 2. Connect and query ──────────────────────────────────────────────
         conn = await db.connect();
 
-        // ── 3. Query the Parquet file directly from R2 ────────────────────────
-        //    DuckDB reads it over HTTP — no manual download needed
-        //    USING SAMPLE does reservoir sampling natively in SQL
+        // Data is already aggregated — no SAMPLE needed, just read it all
         const query = `
           SELECT
             timestamp,
@@ -214,18 +213,17 @@ export default function Dashboard() {
             MBO_9,  MBO_10, MBO_11, MBO_12,
             MBO_13, MBO_14
           FROM read_parquet('${PARQUET_URL}')
-          USING SAMPLE ${sampleSize}
           ORDER BY timestamp
         `;
 
         const result = await conn.query(query);
         if (cancelled) return;
 
-        // ── 4. Convert Arrow result to plain JS objects ───────────────────────
+        // ── 3. Convert Arrow result → plain JS objects ────────────────────────
         const rawRows = result.toArray().map(row => row.toJSON());
-        console.log("DuckDB returned rows:", rawRows.length);
+        console.log("DuckDB rows loaded:", rawRows.length);
 
-        // ── 5. Map to dashboard field names ──────────────────────────────────
+        // ── 4. Map to dashboard field names ───────────────────────────────────
         const cleaned = rawRows
           .filter(row => row.timestamp)
           .map((row, i) => ({
@@ -261,15 +259,14 @@ export default function Dashboard() {
         console.error("DuckDB load failed:", err);
         setError(err?.message || "Failed to load data.");
       } finally {
-        // ── 6. Clean up DuckDB connection ─────────────────────────────────────
-        try { if (conn) await conn.close(); } catch (_) {}
-        try { if (db)   await db.terminate(); } catch (_) {}
+        try { if (conn) await conn.close();    } catch (_) {}
+        try { if (db)   await db.terminate();  } catch (_) {}
       }
     }
 
     loadParquet();
     return () => { cancelled = true; };
-  }, [sampleSize]);
+  }, []);
 
   if (error) return (
     <div style={{ color: C.sell, padding: 40, fontFamily: "monospace", background: C.bg, minHeight: "100vh" }}>
@@ -328,23 +325,6 @@ export default function Dashboard() {
           <StatBadge label="SPX Price"  value={latest.spxPrice?.toFixed(1)}  color={C.accent4} />
           <StatBadge label="Call Delta" value={latest.callDelta?.toFixed(3)} color={C.accent3} greek="delta" />
           <StatBadge label="Gamma"      value={latest.gamma?.toFixed(5)}     color={C.accent5} greek="gamma" />
-
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <span style={{ fontSize: 10, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.1em" }}>Sample Size</span>
-            <select
-              value={sampleSize}
-              onChange={(e) => setSampleSize(Number(e.target.value))}
-              style={{ background: C.panel, color: C.text, border: "1px solid " + C.border, borderRadius: 6, padding: "4px 10px", fontSize: 11, fontFamily: "'DM Mono', monospace", cursor: "pointer" }}
-            >
-              <option value={1000}>1,000 rows</option>
-              <option value={5000}>5,000 rows</option>
-              <option value={10000}>10,000 rows</option>
-              <option value={50000}>50,000 rows</option>
-              <option value={100000}>100,000 rows</option>
-              <option value={150000}>150,000 rows</option>
-              <option value={180000}>180,000 rows</option>
-            </select>
-          </div>
         </div>
       </div>
 
