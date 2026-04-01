@@ -1,7 +1,11 @@
 node_modules
 fixed_output.csv
+output.parquet
+output_agg.parquet
 Notes
 package-lock.json
+package.json
 private
 build
 package.json
+.venv
