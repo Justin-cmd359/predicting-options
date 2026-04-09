@@ -5,3 +5,4 @@ package-lock.json
 private
 build
 package.json
+.venv
