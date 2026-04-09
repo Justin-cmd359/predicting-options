@@ -1,8 +1,10 @@
 node_modules
-fixed_output.csv
 Notes
 package-lock.json
+package.json
 private
 build
 package.json
 .venv
+data
+test_output
