@@ -4,11 +4,12 @@
   "private": true,
   "homepage": "https://Justin-cmd359.github.io/predicting-options",
   "dependencies": {
-    "papaparse": "^5.4.1",
-    "recharts": "^2.10.0",
+    "@duckdb/duckdb-wasm": "^1.33.1-dev20.0",
+    "hyparquet": "^1.25.6",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "react-scripts": "5.0.1"
+    "react-scripts": "5.0.1",
+    "recharts": "^2.10.0"
   },
   "devDependencies": {
     "gh-pages": "^6.0.0"
