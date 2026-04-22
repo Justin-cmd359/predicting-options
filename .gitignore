@@ -8,3 +8,5 @@ package.json
 .venv
 data
 test_output
+sandbox_scripts
+makefile
