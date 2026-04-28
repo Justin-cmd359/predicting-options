@@ -1,10 +1,10 @@
 {
   "files": {
-    "main.js": "/predicting-options/static/js/main.e6ea9a76.js",
+    "main.js": "/predicting-options/static/js/main.ecc32d0d.js",
     "index.html": "/predicting-options/index.html",
-    "main.e6ea9a76.js.map": "/predicting-options/static/js/main.e6ea9a76.js.map"
+    "main.ecc32d0d.js.map": "/predicting-options/static/js/main.ecc32d0d.js.map"
   },
   "entrypoints": [
-    "static/js/main.e6ea9a76.js"
+    "static/js/main.ecc32d0d.js"
   ]
 }
