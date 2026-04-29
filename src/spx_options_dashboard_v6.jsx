@@ -32,7 +32,7 @@ import {
  * Contains 1-second aggregated SPX/ES options data for Apr 14–15 2025.
  */
 const PARQUET_URL =
-  "https://pub-73edacec404b41a29ac6cf15672e387f.r2.dev/20250414_full_agg.parquet";
+  "https://pub-73edacec404b41a29ac6cf15672e387f.r2.dev/20250414_full_agg_v2.parquet";
 
 /**
  * Maximum number of data points sent to Recharts per chart type.
@@ -141,6 +141,61 @@ function downsample(data, maxPts) {
   return result;
 }
 
+// All camelCase Greek field names used in every merged row
+const GREEK_KEYS = [
+  'callDelta','callGamma','callVega','callTheta',
+  'callVanna','callCharm','callVomma','callRho',
+  'putDelta','putGamma','putVega','putTheta',
+  'putVanna','putCharm','putVomma','putRho',
+];
+const MBO_LEVEL_KEYS = Array.from({ length: 20 }, (_, i) => 'mbo' + (i + 1));
+
+/**
+ * Merge Ask and Bid rows that share the same timestamp into single objects,
+ * adding `ask_*`, `bid_*`, and `spread_*` (Ask − Bid) fields for every Greek,
+ * mbo_ps, and all 20 MBO level columns.
+ */
+function mergeAskBid(data) {
+  var byTs = {};
+  data.forEach(function(row) {
+    var ts = row.timestamp;
+    if (!byTs[ts]) byTs[ts] = {};
+    byTs[ts][row.side] = row;
+  });
+  return Object.keys(byTs).sort().map(function(ts) {
+    var ask = byTs[ts].Ask || {};
+    var bid = byTs[ts].Bid || {};
+    var base = ask.esPrice != null ? ask : bid;
+    var merged = {
+      timestamp: ts,
+      esPrice:   base.esPrice,
+      spxPrice:  base.spxPrice,
+      t:         base.t,
+    };
+    GREEK_KEYS.concat(['mbo_ps']).concat(MBO_LEVEL_KEYS).forEach(function(k) {
+      merged['ask_' + k] = ask[k] != null ? ask[k] : null;
+      merged['bid_' + k] = bid[k] != null ? bid[k] : null;
+      merged['spread_' + k] = (ask[k] != null && bid[k] != null) ? ask[k] - bid[k] : null;
+    });
+    return merged;
+  });
+}
+
+/**
+ * Remap the `spread_*` fields of a merged row array back onto the standard
+ * field names (`callDelta`, `mbo_ps`, `mbo1`, …) so that all chart components
+ * can render spread data without any conditional field-name logic.
+ */
+function normalizeSpreads(merged) {
+  return merged.map(function(d) {
+    var row = { timestamp: d.timestamp, esPrice: d.esPrice, spxPrice: d.spxPrice, t: d.t };
+    GREEK_KEYS.concat(['mbo_ps']).concat(MBO_LEVEL_KEYS).forEach(function(k) {
+      row[k] = d['spread_' + k];
+    });
+    return row;
+  });
+}
+
 /**
  * Format a UTC ISO timestamp string (e.g. "2025-04-14T14:00:00.000Z") as a
  * local-time HH:MM:SS string using the browser's local timezone.
@@ -179,6 +234,21 @@ function formatHourTick(value) {
   const hh = String(dt.getHours()).padStart(2, "0");
   const mm = String(dt.getMinutes()).padStart(2, "0");
   return `${hh}:${mm}`;
+}
+
+/**
+ * Like formatHourTick but prepends "MM/DD " so labels are unambiguous when
+ * the visible range spans multiple calendar days.
+ */
+function formatDayHourTick(value) {
+  if (!value) return "";
+  const dt = new Date(value);
+  if (isNaN(dt.getTime())) return String(value);
+  const mo = String(dt.getMonth() + 1).padStart(2, "0");
+  const dd = String(dt.getDate()).padStart(2, "0");
+  const hh = String(dt.getHours()).padStart(2, "0");
+  const mm = String(dt.getMinutes()).padStart(2, "0");
+  return `${mo}/${dd} ${hh}:${mm}`;
 }
 
 /**
@@ -274,10 +344,13 @@ function getHourlyTicks(data) {
   var last  = tsArray[tsArray.length - 1];
   var spanSecs = (last - first) / 1000;
 
-  // Choose interval based on zoom level
-  var intervalMs = spanSecs > TICK_SUBHOUR_THRESHOLD_S
-    ? 60 * 60 * 1000       // 1 hour
-    : 10 * 60 * 1000;      // 10 minutes
+  // Choose interval based on span — wider views use coarser ticks to avoid crowding
+  var DAY_S = 86400;
+  var intervalMs =
+    spanSecs > 5 * DAY_S ? 4 * 60 * 60 * 1000 :   // > 5 days  → 4-hour ticks
+    spanSecs > 2 * DAY_S ? 2 * 60 * 60 * 1000 :   // > 2 days  → 2-hour ticks
+    spanSecs > TICK_SUBHOUR_THRESHOLD_S ? 60 * 60 * 1000 :  // > 1 hour → hourly
+    10 * 60 * 1000;                                 // ≤ 1 hour  → 10-min
 
   // Find first boundary at or after `first`
   var startBoundary = Math.ceil(first / intervalMs) * intervalMs;
@@ -584,21 +657,21 @@ function CustomTooltip({ active, payload, label }) {
  * @param {string[]} ticks  Tick timestamp array from getHourlyTicks()
  * @returns {object}        Props spread directly onto <XAxis>
  */
-function buildTimeAxisProps(ticks) {
+function buildTimeAxisProps(ticks, tickFormatter) {
   return {
     dataKey: "timestamp",
     ticks: ticks,
-    tickFormatter: formatHourTick,
+    tickFormatter: tickFormatter || formatHourTick,
     interval: 0,
     minTickGap: 60,
     tickMargin: 8,
     tick: {
       fill: C.textDim,
       fontSize: 9,
-      angle: -25,
+      angle: -30,
       textAnchor: "end",
     },
-    height: 36,
+    height: 44,
     axisLine: { stroke: C.border },
     tickLine: { stroke: C.border },
   };
@@ -656,26 +729,26 @@ const LEGEND_PROPS = {
  * @param {Array} separators  Output of getDaySeparators()
  * @returns {ReactNode[]}
  */
-function renderDaySeparators(separators) {
+function renderDaySeparators(separators, yAxisId) {
   return separators.map(function(s) {
-    return (
-      <ReferenceLine
-        key={s.timestamp}
-        x={s.timestamp}
-        stroke={C.accent3}
-        strokeDasharray="4 3"
-        strokeOpacity={0.5}
-        strokeWidth={1}
-        label={{
-          value: s.label,
-          position: "insideTopRight",
-          fill: C.accent3,
-          fontSize: 9,
-          fontFamily: "'DM Mono', monospace",
-          opacity: 0.8,
-        }}
-      />
-    );
+    var props = {
+      key: s.timestamp,
+      x: s.timestamp,
+      stroke: C.accent3,
+      strokeDasharray: "4 3",
+      strokeOpacity: 0.5,
+      strokeWidth: 1,
+      label: {
+        value: s.label,
+        position: "insideTopRight",
+        fill: C.accent3,
+        fontSize: 9,
+        fontFamily: "'DM Mono', monospace",
+        opacity: 0.8,
+      },
+    };
+    if (yAxisId !== undefined) props.yAxisId = yAxisId;
+    return <ReferenceLine {...props} />;
   });
 }
 
@@ -690,7 +763,7 @@ function renderDaySeparators(separators) {
  *
  * State hierarchy:
  *   ALL_DATA        Raw cleaned rows from Parquet (never mutated after load)
- *     └─ DATA       Filtered by selectedDate + selectedSide
+ *     └─ DATA       Filtered by selectedDate
  *          └─ VIEWED_DATA  Further sliced by zoomRange
  *               └─ [tab]ChartData  Downsampled for Recharts (tab-gated)
  */
@@ -698,7 +771,7 @@ export default function Dashboard() {
 
   // ── UI state ───────────────────────────────────────────────────────────────
   const [activeTab,     setActiveTab]     = useState("overview");
-  const [selectedSide,  setSelectedSide]  = useState("All");
+  const [selectedSide,  setSelectedSide]  = useState("Ask"); // "Ask" | "Bid" | "Spread"
   const [selectedDate,  setSelectedDate]  = useState("all"); // "all" | "YYYY-MM-DD"
 
   // Manual time-slice filter. Inputs are local datetime strings; timeRange is ISO.
@@ -825,7 +898,8 @@ export default function Dashboard() {
   const BASE_DATA = useMemo(() => {
     return ALL_DATA.filter(d => {
       var dateOk = selectedDate === "all" || isoToDate(d.timestamp) === selectedDate;
-      var sideOk = selectedSide === "All" || d.side === selectedSide;
+      // Spread mode keeps both sides so mergeAskBid can pair them
+      var sideOk = selectedSide === "Spread" || d.side === selectedSide;
       return dateOk && sideOk;
     });
   }, [ALL_DATA, selectedSide, selectedDate]);
@@ -859,6 +933,23 @@ export default function Dashboard() {
     return DATA.filter(d => d.timestamp >= lo && d.timestamp <= hi);
   }, [DATA, zoomRange]);
 
+  // Only merge when Spread mode is active — no-op cost otherwise
+  const mergedViewedData = useMemo(() => {
+    if (selectedSide !== "Spread" || !VIEWED_DATA.length) return [];
+    return mergeAskBid(VIEWED_DATA);
+  }, [VIEWED_DATA, selectedSide]);
+
+  /**
+   * Single data layer consumed by every chart.
+   * Ask/Bid: raw VIEWED_DATA rows with standard field names.
+   * Spread:  normalizeSpreads() remaps spread_* → standard names so charts
+   *          need zero conditional logic.
+   */
+  const displayData = useMemo(() => {
+    if (selectedSide === "Spread") return normalizeSpreads(mergedViewedData);
+    return VIEWED_DATA;
+  }, [selectedSide, VIEWED_DATA, mergedViewedData]);
+
 
   // ── Tab-gated, downsampled chart data ─────────────────────────────────────
   /**
@@ -871,41 +962,40 @@ export default function Dashboard() {
    */
 
   const overviewChartData = useMemo(() => {
-    if (activeTab !== "overview" || !VIEWED_DATA.length) return null;
+    if (activeTab !== "overview" || !displayData.length) return null;
     return {
-      price:  downsample(VIEWED_DATA, DS.line),   // ES + SPX price lines
-      delta:  downsample(VIEWED_DATA, DS.line),   // call/put delta areas
-      mboBar: downsample(VIEWED_DATA, DS.bar),    // MBO net flow bars
+      price:  downsample(displayData, DS.line),
+      delta:  downsample(displayData, DS.line),
+      mboBar: downsample(displayData, DS.bar),
     };
-  }, [VIEWED_DATA, activeTab]);
+  }, [displayData, activeTab]);
 
   const greeksChartData = useMemo(() => {
-    if (activeTab !== "greeks" || !VIEWED_DATA.length) return null;
-    // All 7 Greek charts share one downsampled array (one allocation)
-    return downsample(VIEWED_DATA, DS.line);
-  }, [VIEWED_DATA, activeTab]);
+    if (activeTab !== "greeks" || !displayData.length) return null;
+    return downsample(displayData, DS.line);
+  }, [displayData, activeTab]);
 
   const microChartData = useMemo(() => {
-    if (activeTab !== "microstructure" || !VIEWED_DATA.length) return null;
+    if (activeTab !== "microstructure" || !displayData.length) return null;
     return {
-      mboBar:  downsample(VIEWED_DATA, DS.bar),
-      scatter: downsample(VIEWED_DATA, DS.scatter),
+      mboBar:  downsample(displayData, DS.bar),
+      scatter: downsample(displayData, DS.scatter),
     };
-  }, [VIEWED_DATA, activeTab]);
+  }, [displayData, activeTab]);
 
   const orderBookChartData = useMemo(() => {
-    if (activeTab !== "order book" || !VIEWED_DATA.length) return null;
-    // All 10 pair-charts share one downsampled slice
-    return downsample(VIEWED_DATA, DS.bookPair);
-  }, [VIEWED_DATA, activeTab]);
+    if (activeTab !== "order book" || !displayData.length) return null;
+    return downsample(displayData, DS.bookPair);
+  }, [displayData, activeTab]);
 
 
   // ── Always-on derived values ───────────────────────────────────────────────
   // These drive the header stat badges and Session Summary — they must always
   // reflect the current VIEWED_DATA even when a tab is inactive.
 
-  const latest = VIEWED_DATA.length
-    ? VIEWED_DATA[VIEWED_DATA.length - 1]
+  // Last row of displayData — has standard field names in all three modes
+  const latestDisplayRow = displayData.length
+    ? displayData[displayData.length - 1]
     : (ALL_DATA.length ? ALL_DATA[ALL_DATA.length - 1] : null);
 
   const askCount = useMemo(
@@ -921,17 +1011,13 @@ export default function Dashboard() {
     [VIEWED_DATA]
   );
 
-  /**
-   * Snapshot of MBO book levels L1–L20 taken from the most recent row.
-   * Not downsampled — always shows exact values for the latest second.
-   */
   const mboHeatData = useMemo(() => {
-    if (!latest) return [];
+    if (!latestDisplayRow) return [];
     return Array.from({ length: 20 }, (_, i) => ({
       level: "L" + (i + 1),
-      value: latest["mbo" + (i + 1)],
+      value: latestDisplayRow["mbo" + (i + 1)],
     }));
-  }, [latest]);
+  }, [latestDisplayRow]);
 
   const maxMboAbs = useMemo(
     () => Math.max(...mboHeatData.map(x => Math.abs(x.value || 0)), 1),
@@ -942,7 +1028,7 @@ export default function Dashboard() {
   // ── Early returns for loading / error ─────────────────────────────────────
   if (error)           return <div style={{ color: C.ask, padding: 40, fontFamily: "monospace", background: C.bg, minHeight: "100vh" }}>Failed to load data: {error}</div>;
   if (!ALL_DATA.length) return <div style={{ color: C.accent1, padding: 40, fontFamily: "monospace", background: C.bg, minHeight: "100vh" }}>Loading data…</div>;
-  if (!latest)         return null;
+  if (!latestDisplayRow) return null;
 
 
   // ── Shared x-axis config (computed once per render) ────────────────────────
@@ -959,14 +1045,20 @@ export default function Dashboard() {
     activeTab === "microstructure" ? (microChartData?.mboBar) :
     activeTab === "order book"     ? orderBookChartData :
     null
-  ) || VIEWED_DATA;
+  ) || displayData;
 
   // IMPORTANT:
   // Ticks must come from the actual rendered chart data.
   // If ticks come from VIEWED_DATA but the chart is downsampled,
   // Recharts may not find matching x-values, so labels disappear.
   var timeTicks = getNiceTicksFromRenderedData(activeSlice);
-  var timeAxisProps = buildTimeAxisProps(timeTicks);
+  // Switch to date+time labels when the visible span exceeds one day
+  var activeSpanMs = activeSlice && activeSlice.length >= 2
+    ? new Date(activeSlice[activeSlice.length - 1].timestamp).getTime()
+      - new Date(activeSlice[0].timestamp).getTime()
+    : 0;
+  var tickFmt = activeSpanMs > 86400000 ? formatDayHourTick : formatHourTick;
+  var timeAxisProps = buildTimeAxisProps(timeTicks, tickFmt);
   /**
    * Day separators for multi-session views. Only relevant when selectedDate
    * is "all" and VIEWED_DATA spans more than one calendar date.
@@ -1082,7 +1174,6 @@ export default function Dashboard() {
     resetZoom();
   }
 
-  /** Changing side can leave a zoom window empty, so reset only the zoom. */
   function handleSideChange(side) {
     setSelectedSide(side);
     resetZoom();
@@ -1097,27 +1188,27 @@ export default function Dashboard() {
     };
   }
 
-  function renderZoomSelection() {
+  function renderZoomSelection(yAxisId) {
     if (!isDragging || !dragLo || !dragHi) return null;
-    return (
-      <ReferenceArea
-        x1={dragLo}
-        x2={dragHi}
-        fill={C.accent5}
-        fillOpacity={0.12}
-        stroke={C.accent5}
-        strokeOpacity={0.5}
-        strokeWidth={1}
-      />
-    );
+    var props = {
+      x1: dragLo,
+      x2: dragHi,
+      fill: C.accent5,
+      fillOpacity: 0.12,
+      stroke: C.accent5,
+      strokeOpacity: 0.5,
+      strokeWidth: 1,
+    };
+    if (yAxisId !== undefined) props.yAxisId = yAxisId;
+    return <ReferenceArea {...props} />;
   }
 
   /** Human-readable label for the zoom window duration shown in the header */
   function zoomDurationLabel() {
-    if (!zoomRange || !VIEWED_DATA.length) return "";
+    if (!zoomRange || !displayData.length) return "";
     var secs = Math.round(
-      (new Date(VIEWED_DATA[VIEWED_DATA.length - 1].timestamp) -
-       new Date(VIEWED_DATA[0].timestamp)) / 1000
+      (new Date(displayData[displayData.length - 1].timestamp) -
+       new Date(displayData[0].timestamp)) / 1000
     );
     if (secs < 60)   return secs + "s window";
     if (secs < 3600) return Math.round(secs / 60) + "m window";
@@ -1164,9 +1255,9 @@ export default function Dashboard() {
             S&amp;P 500 Derivative
           </h1>
           <div style={{ fontSize: 10, color: C.textDim, marginTop: 3, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <span>{formatTimeTick(latest.timestamp)}</span>
+            <span>{formatTimeTick(latestDisplayRow?.timestamp)}</span>
             <span style={{ color: C.border }}>·</span>
-            <span>T = {latest.t != null ? latest.t.toFixed(5) : "—"}</span>
+            <span>T = {latestDisplayRow?.t != null ? latestDisplayRow.t.toFixed(5) : "—"}</span>
             <span style={{ color: C.border }}>·</span>
             <span>{viewedRows} rows</span>
             {downsampled && (
@@ -1181,12 +1272,12 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Key stat badges — always reflect the current zoom/filter view */}
+        {/* Key stat badges — always reflect the current zoom/filter/mode view */}
         <div style={{ display: "flex", gap: 20, alignItems: "flex-end", flexWrap: "wrap" }}>
-          <StatBadge label="ES Price"   value={latest.esPrice   != null ? latest.esPrice.toFixed(1)   : "—"} color={C.accent1} />
-          <StatBadge label="SPX Price"  value={latest.spxPrice  != null ? latest.spxPrice.toFixed(1)  : "—"} color={C.accent4} />
-          <StatBadge label="Call Delta" value={latest.callDelta != null ? latest.callDelta.toFixed(3) : "—"} color={C.accent3} greek="delta" />
-          <StatBadge label="Call Gamma" value={latest.callGamma != null ? latest.callGamma.toFixed(5) : "—"} color={C.accent5} greek="gamma" />
+          <StatBadge label="ES Price"   value={latestDisplayRow?.esPrice   != null ? latestDisplayRow.esPrice.toFixed(1)   : "—"} color={C.accent1} />
+          <StatBadge label="SPX Price"  value={latestDisplayRow?.spxPrice  != null ? latestDisplayRow.spxPrice.toFixed(1)  : "—"} color={C.accent4} />
+          <StatBadge label="Call Delta" value={latestDisplayRow?.callDelta != null ? latestDisplayRow.callDelta.toFixed(3) : "—"} color={C.accent3} greek="delta" />
+          <StatBadge label="Call Gamma" value={latestDisplayRow?.callGamma != null ? latestDisplayRow.callGamma.toFixed(5) : "—"} color={C.accent5} greek="gamma" />
         </div>
       </div>
 
@@ -1212,14 +1303,14 @@ export default function Dashboard() {
 
         <div style={{ width: 1, height: 16, background: C.border }} />
 
-        {/* Side filter */}
+        {/* Side / Spread filter */}
         <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
-          <span style={{ fontSize: 9, color: C.textDim, letterSpacing: "0.1em", textTransform: "uppercase" }}>Side</span>
-          {["All", "Ask", "Bid"].map(s => (
+          <span style={{ fontSize: 9, color: C.textDim, letterSpacing: "0.1em", textTransform: "uppercase" }}>View</span>
+          {["Ask", "Bid", "Spread"].map(s => (
             <FilterPill
               key={s} label={s} active={selectedSide === s}
               onClick={() => handleSideChange(s)}
-              color={s === "Ask" ? C.ask : s === "Bid" ? C.bid : C.accent1}
+              color={s === "Ask" ? C.ask : s === "Bid" ? C.bid : C.accent3}
             />
           ))}
         </div>
@@ -1453,13 +1544,13 @@ export default function Dashboard() {
               <div style={{ fontSize: 10, color: C.textDim }}>
                 <GreekLabel name="gamma" label="Gamma" /> latest:{" "}
                 <span style={{ color: C.accent4 }}>
-                  {latest.callGamma != null ? latest.callGamma.toFixed(6) : "—"}
+                  {latestDisplayRow?.callGamma != null ? latestDisplayRow.callGamma.toFixed(6) : "—"}
                 </span>
               </div>
               <div style={{ fontSize: 10, color: C.textDim }}>
                 <GreekLabel name="vega" label="Vega" /> latest:{" "}
                 <span style={{ color: C.accent3 }}>
-                  {latest.callVega != null ? latest.callVega.toFixed(3) : "—"}
+                  {latestDisplayRow?.callVega != null ? latestDisplayRow.callVega.toFixed(3) : "—"}
                 </span>
               </div>
             </div>
@@ -1693,7 +1784,7 @@ export default function Dashboard() {
           [MBO Level Snapshot — L1–L20 horizontal bar (span 2)]
           [10 × paired line charts for level pairs L1/L2 … L19/L20]
 
-          The snapshot bar chart uses the raw `latest` row (not downsampled)
+          The snapshot bar chart uses the `latestDisplayRow` (not downsampled)
           so values are always exact for the most recent second.
           The pair line charts share orderBookChartData (one downsample).
       ════════════════════════════════════════════════════════════════════ */}
@@ -1750,7 +1841,7 @@ export default function Dashboard() {
                     <Line type="monotone" dataKey={a} stroke={C.accent1} dot={false} strokeWidth={1.2} name={labelA} />
                     <Line type="monotone" dataKey={b} stroke={C.accent2} dot={false} strokeWidth={1.2} name={labelB} />
                     {renderZoomSelection()}
-                {renderDaySeparators(daySeparators)}
+                    {renderDaySeparators(daySeparators)}
                   </LineChart>
                 </ResponsiveContainer>
               </Panel>
