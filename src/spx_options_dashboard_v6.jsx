@@ -1,7 +1,11 @@
 /**
  * SPX / ES Options Analytics Dashboard
- * Version 5 — Tufte-informed chart cleanup, hourly x-axis ticks,
- *              multi-day session separators, full code documentation.
+ * Version 5 — Conservative edits applied:
+ *   - Removed Overview Session Summary panel
+ *   - Replaced datetime-local time slice with start/end data-day + time picker
+ *   - Removed Microstructure Ask / Bid Distribution panel
+ *   - Precomputed Spread rows to reduce Spread toggle lag
+ *   - Date filter and Time Slice now reset each other to avoid conflicts
  *
  * Data source : Cloudflare R2 (20250414_full_agg.parquet)
  * Sessions    : 2025-04-14 09:21–16:00 ET  |  2025-04-15 09:23–11:21 ET
@@ -27,36 +31,12 @@ import {
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Remote Parquet file served from Cloudflare R2.
- * Contains 1-second aggregated SPX/ES options data for Apr 14–15 2025.
- */
 const PARQUET_URL =
   "https://pub-73edacec404b41a29ac6cf15672e387f.r2.dev/20250414_full_agg_v2.parquet";
 
-/**
- * Maximum number of data points sent to Recharts per chart type.
- * Recharts renders one SVG element per point; keeping these low prevents
- * browser jank on 60 k-row datasets while remaining visually lossless.
- *   line/area : 600 pts ≈ one tick every ~100 s on a full-day view
- *   bar       : 400 pts (bars merge below ~2 px anyway)
- *   scatter   : 800 pts (needs more density to preserve cloud shape)
- *   bookPair  : 500 pts × 10 panels = 5 k elements (vs 618 k unsampled)
- */
 const DS = { line: 600, bar: 400, scatter: 800, bookPair: 500 };
 
-/**
- * Maximum delta (in seconds) between a requested whole-hour boundary and the
- * nearest actual data timestamp for that hour to be included as an x-axis tick.
- * 300 s = 5 minutes. Hours far outside trading sessions (overnight gap) are
- * automatically excluded because no data point falls within this threshold.
- */
 const TICK_MAX_DELTA_S = 300;
-
-/**
- * When the visible time span (VIEWED_DATA) is shorter than this many seconds,
- * switch from hourly ticks to 10-minute ticks for better granularity.
- */
 const TICK_SUBHOUR_THRESHOLD_S = 3600;
 
 
@@ -64,28 +44,22 @@ const TICK_SUBHOUR_THRESHOLD_S = 3600;
 // Colour palette
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * All chart colours in one place. Dark theme optimised for screen readability.
- * Tufte note: accent colours are used sparingly — only to encode information,
- * never for decoration.
- */
 const C = {
-  bg:      "#07080f",   // page background
-  panel:   "#0e1019",   // card background
-  border:  "#1c1f2e",   // card / axis border
-  grid:    "#14172200", // chart gridlines — very faint, non-zero opacity keeps
-                        // structure without competing with data lines
-  accent1: "#00e5ff",   // cyan  — ES price, call series primary
-  accent2: "#ff6b35",   // orange — put series, negative MBO
-  accent3: "#a78bfa",   // violet — date pill, secondary call
-  accent4: "#34d399",   // green  — SPX price, bid, positive values
-  accent5: "#f59e0b",   // amber  — zoom selection, gamma/vega highlights
-  muted:   "#4b5263",   // mid-grey — zero reference lines, minor elements
-  text:    "#c8cfe0",   // primary text
-  textDim: "#5a6070",   // secondary text, axis labels
-  ask:     "#f87171",   // red-ish — Ask side, theta, negative
-  bid:     "#34d399",   // green  — Bid side, positive MBO
-  daySep:  "#2a2f45",   // day-separator stripe fill
+  bg:      "#07080f",
+  panel:   "#0e1019",
+  border:  "#1c1f2e",
+  grid:    "#14172200",
+  accent1: "#00e5ff",
+  accent2: "#ff6b35",
+  accent3: "#a78bfa",
+  accent4: "#34d399",
+  accent5: "#f59e0b",
+  muted:   "#4b5263",
+  text:    "#c8cfe0",
+  textDim: "#5a6070",
+  ask:     "#f87171",
+  bid:     "#34d399",
+  daySep:  "#2a2f45",
 };
 
 
@@ -93,10 +67,6 @@ const C = {
 // Greek tooltip definitions
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Human-readable definitions shown when hovering the ? badge on any Greek
- * label. Kept in one object so they're easy to update or translate.
- */
 const GREEK_DEFINITIONS = {
   delta: "Change in option premium per $1 move in the underlying. Calls range 0 to 1, Puts -1 to 0. Approaches +/-0.5 at-the-money.",
   gamma: "Rate of change of delta per $1 move in the underlying. Highest at-the-money; falls as the option moves further in or out of the money.",
@@ -113,21 +83,6 @@ const GREEK_DEFINITIONS = {
 // Pure utility functions
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Reduce `data` to at most `maxPts` evenly-spaced rows, always keeping the
- * first and last row so time-axis edges remain accurate.
- *
- * Algorithm: uniform stride — pick index round(i * step) for i in [0, maxPts).
- * Time complexity: O(maxPts) after the length check. Safe inside useMemo.
- *
- * When data.length ≤ maxPts the original array is returned unchanged, which
- * means zoomed-in views (< 600 rows) automatically show full 1-second
- * resolution without any special-casing.
- *
- * @param {Array}  data    Sorted row array
- * @param {number} maxPts  Upper bound on output length
- * @returns {Array}
- */
 function downsample(data, maxPts) {
   if (!data || data.length <= maxPts) return data;
   var result = new Array(maxPts);
@@ -141,75 +96,57 @@ function downsample(data, maxPts) {
   return result;
 }
 
-// All camelCase Greek field names used in every merged row
 const GREEK_KEYS = [
-  'callDelta','callGamma','callVega','callTheta',
-  'callVanna','callCharm','callVomma','callRho',
-  'putDelta','putGamma','putVega','putTheta',
-  'putVanna','putCharm','putVomma','putRho',
+  "callDelta","callGamma","callVega","callTheta",
+  "callVanna","callCharm","callVomma","callRho",
+  "putDelta","putGamma","putVega","putTheta",
+  "putVanna","putCharm","putVomma","putRho",
 ];
-const MBO_LEVEL_KEYS = Array.from({ length: 20 }, (_, i) => 'mbo' + (i + 1));
+
+const MBO_LEVEL_KEYS = Array.from({ length: 20 }, (_, i) => "mbo" + (i + 1));
+
+const MBO_LINE_COLORS = [
+  C.accent1, C.accent2, C.accent3, C.accent4, C.accent5,
+  C.ask, C.bid, "#ec4899", "#818cf8", "#22d3ee",
+  "#fb7185", "#fbbf24", "#2dd4bf", "#c084fc", "#60a5fa",
+  "#f97316", "#84cc16", "#e879f9", "#38bdf8", "#f43f5e",
+];
 
 /**
- * Merge Ask and Bid rows that share the same timestamp into single objects,
- * adding `ask_*`, `bid_*`, and `spread_*` (Ask − Bid) fields for every Greek,
- * mbo_ps, and all 20 MBO level columns.
+ * Build Ask − Bid spread data once from the full cleaned dataset.
+ * This prevents the expensive merge/normalize operation from happening every
+ * time the user clicks the Spread button.
  */
-function mergeAskBid(data) {
+function buildSpreadData(data) {
   var byTs = {};
+
   data.forEach(function(row) {
     var ts = row.timestamp;
     if (!byTs[ts]) byTs[ts] = {};
     byTs[ts][row.side] = row;
   });
+
   return Object.keys(byTs).sort().map(function(ts) {
     var ask = byTs[ts].Ask || {};
     var bid = byTs[ts].Bid || {};
     var base = ask.esPrice != null ? ask : bid;
-    var merged = {
-      timestamp: ts,
-      esPrice:   base.esPrice,
-      spxPrice:  base.spxPrice,
-      t:         base.t,
-    };
-    GREEK_KEYS.concat(['mbo_ps']).concat(MBO_LEVEL_KEYS).forEach(function(k) {
-      merged['ask_' + k] = ask[k] != null ? ask[k] : null;
-      merged['bid_' + k] = bid[k] != null ? bid[k] : null;
-      merged['spread_' + k] = (ask[k] != null && bid[k] != null) ? ask[k] - bid[k] : null;
-    });
-    return merged;
-  });
-}
 
-/**
- * Remap the `spread_*` fields of a merged row array back onto the standard
- * field names (`callDelta`, `mbo_ps`, `mbo1`, …) so that all chart components
- * can render spread data without any conditional field-name logic.
- */
-function normalizeSpreads(merged) {
-  return merged.map(function(d) {
-    var row = { timestamp: d.timestamp, esPrice: d.esPrice, spxPrice: d.spxPrice, t: d.t };
-    GREEK_KEYS.concat(['mbo_ps']).concat(MBO_LEVEL_KEYS).forEach(function(k) {
-      row[k] = d['spread_' + k];
+    var row = {
+      timestamp: ts,
+      side: "Spread",
+      esPrice: base.esPrice,
+      spxPrice: base.spxPrice,
+      t: base.t,
+    };
+
+    GREEK_KEYS.concat(["mbo_ps"]).concat(MBO_LEVEL_KEYS).forEach(function(k) {
+      row[k] = (ask[k] != null && bid[k] != null) ? ask[k] - bid[k] : null;
     });
+
     return row;
   });
 }
 
-/**
- * Format a UTC ISO timestamp string (e.g. "2025-04-14T14:00:00.000Z") as a
- * local-time HH:MM:SS string using the browser's local timezone.
- *
- * This is intentional: timestamps are stored as UTC in the parquet file, but
- * users prefer to read chart axes in their own local time. The browser's
- * Date object handles DST automatically.
- *
- * Note: if local time is Pacific (UTC-7), 13:21 UTC → 06:21 local, which
- * correctly reflects when the market opened in that timezone.
- *
- * @param {string} value  ISO timestamp string
- * @returns {string}      "HH:MM:SS"
- */
 function formatTimeTick(value) {
   if (!value) return "";
   const dt = new Date(value);
@@ -220,13 +157,6 @@ function formatTimeTick(value) {
   return `${hh}:${mm}:${ss}`;
 }
 
-/**
- * Same as formatTimeTick but omits seconds — used for hour-boundary tick
- * labels so they read "10:00" instead of "10:00:00".
- *
- * @param {string} value  ISO timestamp string
- * @returns {string}      "HH:MM"
- */
 function formatHourTick(value) {
   if (!value) return "";
   const dt = new Date(value);
@@ -236,10 +166,6 @@ function formatHourTick(value) {
   return `${hh}:${mm}`;
 }
 
-/**
- * Like formatHourTick but prepends "MM/DD " so labels are unambiguous when
- * the visible range spans multiple calendar days.
- */
 function formatDayHourTick(value) {
   if (!value) return "";
   const dt = new Date(value);
@@ -251,24 +177,10 @@ function formatDayHourTick(value) {
   return `${mo}/${dd} ${hh}:${mm}`;
 }
 
-/**
- * Extract the calendar date portion of an ISO string ("2025-04-14T…" → "2025-04-14").
- * Used for date-pill filtering and day-separator logic.
- *
- * @param {string} ts  ISO timestamp string
- * @returns {string}   "YYYY-MM-DD"
- */
 function isoToDate(ts) {
   return ts ? ts.slice(0, 10) : "";
 }
 
-/**
- * Convert an ISO timestamp into a value accepted by <input type="datetime-local">.
- * The browser displays this in local time, matching the chart axis/tooltips.
- *
- * @param {string} iso  ISO timestamp string
- * @returns {string}    "YYYY-MM-DDTHH:MM:SS" or empty string
- */
 function isoToLocalInputValue(iso) {
   if (!iso) return "";
   var dt = new Date(iso);
@@ -282,26 +194,32 @@ function isoToLocalInputValue(iso) {
   return `${yyyy}-${mm}-${dd}T${hh}:${mi}:${ss}`;
 }
 
-/**
- * Parse a datetime-local input value back into an ISO timestamp.
- * Returns null for blank or invalid input so validation can fail gracefully.
- *
- * @param {string} value  datetime-local input value
- * @returns {string|null} ISO timestamp string or null
- */
-function localInputValueToIso(value) {
-  if (!value) return null;
-  var dt = new Date(value);
+function isoToLocalTimeInputValue(iso) {
+  if (!iso) return "";
+  var dt = new Date(iso);
+  if (isNaN(dt.getTime())) return "";
+
+  var hh = String(dt.getHours()).padStart(2, "0");
+  var mi = String(dt.getMinutes()).padStart(2, "0");
+  var ss = String(dt.getSeconds()).padStart(2, "0");
+
+  return `${hh}:${mi}:${ss}`;
+}
+
+function localDateAndTimeToIso(date, time) {
+  if (!date || !time) return null;
+
+  var parts = time.split(":");
+  var hh = parts[0] || "00";
+  var mi = parts[1] || "00";
+  var ss = parts[2] || "00";
+
+  var dt = new Date(`${date}T${hh}:${mi}:${ss}`);
   if (isNaN(dt.getTime())) return null;
+
   return dt.toISOString();
 }
 
-/**
- * Format an ISO timestamp for compact helper text under the time filter.
- *
- * @param {string} iso  ISO timestamp string
- * @returns {string}    "YYYY-MM-DD HH:MM:SS" in local time
- */
 function formatDateTimeShort(iso) {
   if (!iso) return "—";
   var dt = new Date(iso);
@@ -315,72 +233,11 @@ function formatDateTimeShort(iso) {
   return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
 }
 
-/**
- * Build hourly (or 10-minute) x-axis tick timestamps suited to Tufte's
- * principle of consistent, meaningful axis labels.
- *
- * Strategy:
- *  1. Measure the span of the visible data in seconds.
- *  2. Choose a tick interval: 1 hour if span > TICK_SUBHOUR_THRESHOLD_S,
- *     else 10 minutes.
- *  3. Walk UTC boundaries at the chosen interval across the data range.
- *  4. For each boundary, find the nearest actual data-point timestamp.
- *  5. Exclude any boundary whose nearest point is > TICK_MAX_DELTA_S away —
- *     this automatically drops overnight hours where no data exists.
- *
- * Result: ticks land on clean clock times (10:00, 11:00 …) rather than
- * arbitrary array-index positions, and all charts share the same tick labels
- * because they all receive the same VIEWED_DATA.
- *
- * @param {Array}  data  Downsampled row array (each row has a `timestamp` field)
- * @returns {string[]}   Array of ISO timestamp strings to pass to Recharts ticks
- */
-function getHourlyTicks(data) {
-  if (!data || data.length < 2) return [];
-
-  // Build a lookup: ISO string → index, for fast nearest-point search below
-  var tsArray = data.map(function(d) { return new Date(d.timestamp).getTime(); });
-  var first = tsArray[0];
-  var last  = tsArray[tsArray.length - 1];
-  var spanSecs = (last - first) / 1000;
-
-  // Choose interval based on span — wider views use coarser ticks to avoid crowding
-  var DAY_S = 86400;
-  var intervalMs =
-    spanSecs > 5 * DAY_S ? 4 * 60 * 60 * 1000 :   // > 5 days  → 4-hour ticks
-    spanSecs > 2 * DAY_S ? 2 * 60 * 60 * 1000 :   // > 2 days  → 2-hour ticks
-    spanSecs > TICK_SUBHOUR_THRESHOLD_S ? 60 * 60 * 1000 :  // > 1 hour → hourly
-    10 * 60 * 1000;                                 // ≤ 1 hour  → 10-min
-
-  // Find first boundary at or after `first`
-  var startBoundary = Math.ceil(first / intervalMs) * intervalMs;
-
-  var ticks = [];
-  var boundary = startBoundary;
-
-  while (boundary <= last) {
-    // Binary-search for nearest data timestamp to this boundary
-    var lo = 0, hi = tsArray.length - 1, best = 0;
-    while (lo <= hi) {
-      var mid = (lo + hi) >> 1;
-      if (tsArray[mid] < boundary) { lo = mid + 1; }
-      else                          { hi = mid - 1; }
-      if (Math.abs(tsArray[mid] - boundary) < Math.abs(tsArray[best] - boundary)) {
-        best = mid;
-      }
-    }
-
-    var deltaSecs = Math.abs(tsArray[best] - boundary) / 1000;
-    if (deltaSecs <= TICK_MAX_DELTA_S) {
-      ticks.push(data[best].timestamp);
-    }
-
-    boundary += intervalMs;
-  }
-
-  return ticks;
+function getRangeForDate(data, date) {
+  var rows = data.filter(d => isoToDate(d.timestamp) === date);
+  if (!rows.length) return null;
+  return [rows[0].timestamp, rows[rows.length - 1].timestamp];
 }
-
 
 function getNiceTicksFromRenderedData(data) {
   if (!data || data.length < 2) return [];
@@ -398,8 +255,6 @@ function getNiceTicksFromRenderedData(data) {
   var last = tsArray[tsArray.length - 1].ms;
   var spanSecs = (last - first) / 1000;
 
-  // Pick a reasonable tick count based on zoom window.
-  // This avoids overcrowding while still showing labels initially.
   var targetTicks;
   if (spanSecs <= 10 * 60) {
     targetTicks = 4;
@@ -417,7 +272,6 @@ function getNiceTicksFromRenderedData(data) {
   for (var i = 0; i < targetTicks; i++) {
     var rawIndex = Math.round((i * (tsArray.length - 1)) / (targetTicks - 1));
 
-    // Avoid duplicates when zoomed very tightly.
     if (rawIndex !== lastPickedIndex && tsArray[rawIndex]) {
       ticks.push(tsArray[rawIndex].timestamp);
       lastPickedIndex = rawIndex;
@@ -442,14 +296,7 @@ function formatDateTimeTooltip(value) {
 
   return `${month}/${day}/${year} ${hh}:${mm}:${ss}`;
 }
-/**
- * Find the timestamp of the first data row belonging to each calendar date
- * beyond the first. These are used as `x` values for day-separator
- * ReferenceLines when the view spans multiple sessions.
- *
- * @param {Array}  data  Row array with `timestamp` fields (sorted ascending)
- * @returns {Array}      Objects { timestamp, label } for each session boundary
- */
+
 function getDaySeparators(data) {
   if (!data || !data.length) return [];
   var separators = [];
@@ -457,8 +304,6 @@ function getDaySeparators(data) {
   for (var i = 1; i < data.length; i++) {
     var d = isoToDate(data[i].timestamp);
     if (d !== seenDate) {
-      // Format the label as "Apr 15" using UTC to avoid timezone-shift of the
-      // date string (the timestamp is at the top of a UTC day)
       var dt  = new Date(data[i].timestamp);
       var lbl = dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
       separators.push({ timestamp: data[i].timestamp, label: lbl });
@@ -473,14 +318,6 @@ function getDaySeparators(data) {
 // Reusable UI components
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Inline Greek name label with a hoverable ? badge that shows the definition.
- * Used in Panel titles and StatBadge labels throughout the dashboard.
- *
- * Props:
- *   name  {string}  Key into GREEK_DEFINITIONS (case-insensitive)
- *   label {string}  Display text shown next to the badge
- */
 function GreekLabel({ name, label }) {
   const [show, setShow] = useState(false);
   const def = GREEK_DEFINITIONS[name.toLowerCase()];
@@ -491,7 +328,6 @@ function GreekLabel({ name, label }) {
       onMouseLeave={() => setShow(false)}
     >
       <span>{label}</span>
-      {/* Small circular badge — intentionally minimal (Tufte: no chartjunk) */}
       <span style={{
         fontSize: 9, color: C.accent1, border: "1px solid " + C.accent1,
         borderRadius: "50%", width: 13, height: 13,
@@ -514,23 +350,12 @@ function GreekLabel({ name, label }) {
   );
 }
 
-/**
- * Consistent chart card container. All charts live inside a Panel.
- * The `span` prop controls CSS grid column-span (default 1).
- * Tufte: panels use minimal borders — just enough to separate regions.
- *
- * Props:
- *   title    {ReactNode}  Card heading (may contain a GreekLabel)
- *   subtitle {string}     Smaller descriptive line beneath the title
- *   span     {number}     CSS grid column span (1–3)
- *   children {ReactNode}  Chart content
- */
 function Panel({ title, subtitle, children, span }) {
   return (
     <div style={{
       background: C.panel,
       border: "1px solid " + C.border,
-      borderRadius: 8,                          // reduced from 12 — less decoration
+      borderRadius: 8,
       padding: "16px 18px",
       gridColumn: "span " + (span || 1),
       display: "flex", flexDirection: "column", gap: 10,
@@ -551,16 +376,6 @@ function Panel({ title, subtitle, children, span }) {
   );
 }
 
-/**
- * Numeric stat with an optional GreekLabel above it.
- * Used in the header and Session Summary panel.
- *
- * Props:
- *   label {string}  Short description
- *   value {string}  Formatted number string
- *   color {string}  CSS colour for the value
- *   greek {string}  If set, wraps label in a GreekLabel component
- */
 function StatBadge({ label, value, color, greek }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
@@ -578,16 +393,6 @@ function StatBadge({ label, value, color, greek }) {
   );
 }
 
-/**
- * Toggleable pill button used for Date and Side filters.
- * Active state fills with the accent colour; inactive is ghost-style.
- *
- * Props:
- *   label  {string}   Button text
- *   active {boolean}  Whether this option is currently selected
- *   onClick {fn}      Click handler
- *   color  {string}   Accent colour when active
- */
 function FilterPill({ label, active, onClick, color }) {
   return (
     <button onClick={onClick} style={{
@@ -603,19 +408,8 @@ function FilterPill({ label, active, onClick, color }) {
   );
 }
 
-/**
- * Custom Recharts tooltip shown on hover.
- * Displays the formatted timestamp and all series values.
- * Tufte: tooltip appears only on interaction — no persistent annotation noise.
- *
- * Recharts props (injected automatically):
- *   active  {boolean}  Whether the cursor is over the chart
- *   payload {Array}    Series data for the hovered point
- *   label   {string}   The x-axis value (timestamp ISO string)
- */
 function CustomTooltip({ active, payload, label }) {
   if (!active || !payload || !payload.length) return null;
-  // Detect ISO strings by the presence of "T" and format them as local time
   var displayLabel = (typeof label === "string" && label.includes("T"))
     ? formatDateTimeTooltip(label)
     : label;
@@ -645,18 +439,6 @@ function CustomTooltip({ active, payload, label }) {
 // Shared chart configuration helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Build the Recharts XAxis props object shared by every time-series chart.
- * Centralising this ensures all charts use identical tick spacing and labels.
- *
- * Tufte notes applied here:
- *   - Tick labels use HH:MM (no seconds) for cleaner reading
- *   - minTickGap prevents label collisions on narrow panels
- *   - tick colour matches textDim (recedes behind data)
- *
- * @param {string[]} ticks  Tick timestamp array from getHourlyTicks()
- * @returns {object}        Props spread directly onto <XAxis>
- */
 function buildTimeAxisProps(ticks, tickFormatter) {
   return {
     dataKey: "timestamp",
@@ -676,59 +458,28 @@ function buildTimeAxisProps(ticks, tickFormatter) {
     tickLine: { stroke: C.border },
   };
 }
-/**
- * Build the common Recharts YAxis props for most charts.
- * Width is parameterised because Greek values have varying decimal lengths.
- *
- * Tufte note: tick count reduced to 4 maximum — enough to anchor the eye
- * without cluttering the data region.
- *
- * @param {number} [width=50]  Pixel width reserved for labels
- * @returns {object}
- */
+
 function buildYAxisProps(width) {
   return {
     tick:      { fill: C.textDim, fontSize: 9 },
     tickCount: 4,
     width:     width || 50,
     axisLine:  { stroke: C.border },
-    tickLine:  false,              // Tufte: remove tick marks — the grid does this work
+    tickLine:  false,
   };
 }
 
-/**
- * CartesianGrid props applied to every chart.
- * Tufte: gridlines should be faint and unobtrusive — they help the eye track
- * values without competing with the data lines.
- * Using a very low-opacity solid stroke rather than a dashed pattern avoids
- * the visual noise of repeated dashes.
- */
 const GRID_PROPS = {
-  strokeDasharray: "",           // solid line — less noisy than dashes
-  stroke: "rgba(255,255,255,0.04)", // extremely faint white
+  strokeDasharray: "",
+  stroke: "rgba(255,255,255,0.04)",
   vertical: true,
   horizontal: true,
 };
 
-/**
- * Legend props applied to every chart that has one.
- * Tufte: legend text is small and dim — it identifies series without drawing
- * attention away from the data.
- */
 const LEGEND_PROPS = {
   wrapperStyle: { fontSize: 10, color: C.textDim },
 };
 
-/**
- * Build ReferenceLines for each day-session boundary in `separators`.
- * Renders as a thin vertical line with a floating date label at the top.
- *
- * Tufte: the separator uses a subtle dashed style so it clearly marks a
- * categorical boundary (different day) without looking like data.
- *
- * @param {Array} separators  Output of getDaySeparators()
- * @returns {ReactNode[]}
- */
 function renderDaySeparators(separators, yAxisId) {
   return separators.map(function(s) {
     var props = {
@@ -757,27 +508,22 @@ function renderDaySeparators(separators, yAxisId) {
 // Main Dashboard component
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Root component. Manages all application state, data loading, filtering,
- * zoom, and renders the four-tab dashboard layout.
- *
- * State hierarchy:
- *   ALL_DATA        Raw cleaned rows from Parquet (never mutated after load)
- *     └─ DATA       Filtered by selectedDate
- *          └─ VIEWED_DATA  Further sliced by zoomRange
- *               └─ [tab]ChartData  Downsampled for Recharts (tab-gated)
- */
 export default function Dashboard() {
 
   // ── UI state ───────────────────────────────────────────────────────────────
   const [activeTab,     setActiveTab]     = useState("overview");
-  const [selectedSide,  setSelectedSide]  = useState("Ask"); // "Ask" | "Bid" | "Spread"
-  const [selectedDate,  setSelectedDate]  = useState("all"); // "all" | "YYYY-MM-DD"
+  const [selectedSide,  setSelectedSide]  = useState("Ask");
+  const [selectedDate,  setSelectedDate]  = useState("all");
 
-  // Manual time-slice filter. Inputs are local datetime strings; timeRange is ISO.
-  const [timeStartInput, setTimeStartInput] = useState("");
-  const [timeEndInput,   setTimeEndInput]   = useState("");
-  const [timeRange,      setTimeRange]      = useState(null); // null | [loISO, hiISO]
+  // Custom data-aware time-slice picker.
+  // Date and Time Slice are intentionally mutually exclusive:
+  // applying a time slice forces selectedDate = "all";
+  // choosing a date clears the time slice.
+  const [sliceStartDate, setSliceStartDate] = useState("");
+  const [sliceEndDate, setSliceEndDate] = useState("");
+  const [sliceStartTime, setSliceStartTime] = useState("");
+  const [sliceEndTime, setSliceEndTime] = useState("");
+  const [timeRange,      setTimeRange]      = useState(null);
   const [timeFilterError, setTimeFilterError] = useState("");
 
   // ── Data state ─────────────────────────────────────────────────────────────
@@ -785,9 +531,6 @@ export default function Dashboard() {
   const [error,    setError]   = useState(null);
 
   // ── Zoom state ─────────────────────────────────────────────────────────────
-  // zoomRange  : null = full view, or [loISO, hiISO] after a completed drag
-  // dragStart  : ISO string of the mousedown point (null when not dragging)
-  // dragCurrent: ISO string of the current mousemove point during a drag
   const [zoomRange,   setZoomRange]   = useState(null);
   const [dragStart,   setDragStart]   = useState(null);
   const [dragCurrent, setDragCurrent] = useState(null);
@@ -795,14 +538,6 @@ export default function Dashboard() {
 
 
   // ── Parquet loader ─────────────────────────────────────────────────────────
-  /**
-   * Fetches and parses the Parquet file once on mount.
-   * Uses a `cancelled` flag to avoid setting state after unmount.
-   *
-   * hyparquet's `parquetReadObjects` returns one plain JS object per row.
-   * We rename columns to camelCase for ergonomic use throughout the component,
-   * and sort by timestamp to guarantee chronological order.
-   */
   useEffect(() => {
     var cancelled = false;
 
@@ -815,7 +550,6 @@ export default function Dashboard() {
         var arrayBuffer = await resp.arrayBuffer();
         if (cancelled) return;
 
-        // hyparquet needs a file-like object with byteLength + async slice
         var file = {
           byteLength: arrayBuffer.byteLength,
           slice: (start, end) => Promise.resolve(arrayBuffer.slice(start, end)),
@@ -827,35 +561,29 @@ export default function Dashboard() {
         var cleaned = rawRows
           .filter(row => row.timestamp)
           .map(row => ({
-            // Core identifiers
             timestamp:    row.timestamp instanceof Date
                             ? row.timestamp.toISOString()
                             : String(row.timestamp || ""),
             side:         row.Side,
 
-            // Underlying prices
             esPrice:      row.current_es_price,
             spxPrice:     row.spx_price,
             spxStrike:    row.spx_strike,
             futureStrike: row.future_strike,
-            t:            row.t,               // time to expiry (years)
+            t:            row.t,
 
-            // MBO pulling/stacking net sum
             mbo_ps:       row.MBO_pulling_stacking,
 
-            // Call Greeks
             callDelta: row.call_delta,  callGamma: row.call_gamma,
             callVega:  row.call_vega,   callTheta: row.call_theta,
             callVanna: row.call_vanna,  callCharm: row.call_charm,
             callVomma: row.call_vomma,  callRho:   row.call_rho,
 
-            // Put Greeks
             putDelta:  row.put_delta,   putGamma:  row.put_gamma,
             putVega:   row.put_vega,    putTheta:  row.put_theta,
             putVanna:  row.put_vanna,   putCharm:  row.put_charm,
             putVomma:  row.put_vomma,   putRho:    row.put_rho,
 
-            // Order-book levels L1–L20 (net sum per 1-second bucket)
             mbo1:  row.MBO_1,  mbo2:  row.MBO_2,  mbo3:  row.MBO_3,  mbo4:  row.MBO_4,
             mbo5:  row.MBO_5,  mbo6:  row.MBO_6,  mbo7:  row.MBO_7,  mbo8:  row.MBO_8,
             mbo9:  row.MBO_9,  mbo10: row.MBO_10, mbo11: row.MBO_11, mbo12: row.MBO_12,
@@ -872,60 +600,57 @@ export default function Dashboard() {
 
     loadParquet();
     return () => { cancelled = true; };
-  }, []); // runs once on mount
+  }, []);
 
 
   // ── Derived filter options ─────────────────────────────────────────────────
 
+  const SPREAD_DATA = useMemo(() => {
+    if (!ALL_DATA.length) return [];
+    return buildSpreadData(ALL_DATA);
+  }, [ALL_DATA]);
+
   /**
-   * Unique calendar dates present in ALL_DATA, sorted ascending.
-   * Drives the Date filter pills — auto-updates when new sessions are added.
+   * Data filtered only by side.
+   * This layer deliberately ignores selectedDate so the custom time-slice picker
+   * can work independently and then force selectedDate back to "all".
    */
+  const SIDE_DATA = useMemo(() => {
+    var source = selectedSide === "Spread" ? SPREAD_DATA : ALL_DATA;
+    if (selectedSide === "Spread") return source;
+    return source.filter(d => d.side === selectedSide);
+  }, [ALL_DATA, SPREAD_DATA, selectedSide]);
+
   const allDates = useMemo(() => {
     var seen = {};
-    ALL_DATA.forEach(d => { var dt = isoToDate(d.timestamp); if (dt) seen[dt] = true; });
+    SIDE_DATA.forEach(d => { var dt = isoToDate(d.timestamp); if (dt) seen[dt] = true; });
     return Object.keys(seen).sort();
-  }, [ALL_DATA]);
+  }, [SIDE_DATA]);
 
 
   // ── Filtered data layers ───────────────────────────────────────────────────
 
-  /**
-   * BASE_DATA: ALL_DATA filtered by the date pill and side pill only.
-   * The manual time-slice is validated against this layer so bad ranges can
-   * fail safely without destroying the current visible view.
-   */
   const BASE_DATA = useMemo(() => {
-    return ALL_DATA.filter(d => {
-      var dateOk = selectedDate === "all" || isoToDate(d.timestamp) === selectedDate;
-      // Spread mode keeps both sides so mergeAskBid can pair them
-      var sideOk = selectedSide === "Spread" || d.side === selectedSide;
-      return dateOk && sideOk;
+    return SIDE_DATA.filter(d => {
+      return selectedDate === "all" || isoToDate(d.timestamp) === selectedDate;
     });
-  }, [ALL_DATA, selectedSide, selectedDate]);
+  }, [SIDE_DATA, selectedDate]);
 
-  /**
-   * DATA: BASE_DATA further filtered by the optional manual time-slice.
-   * This remains full-resolution; chart memos downsample from VIEWED_DATA.
-   */
   const DATA = useMemo(() => {
     if (!timeRange) return BASE_DATA;
     var lo = timeRange[0] < timeRange[1] ? timeRange[0] : timeRange[1];
     var hi = timeRange[0] < timeRange[1] ? timeRange[1] : timeRange[0];
-    return BASE_DATA.filter(d => d.timestamp >= lo && d.timestamp <= hi);
-  }, [BASE_DATA, timeRange]);
 
-  /** Available timestamp bounds after date/side filtering but before time slicing. */
+    // Time slice intentionally operates on SIDE_DATA, not BASE_DATA, because
+    // applying a time slice resets the date filter to All.
+    return SIDE_DATA.filter(d => d.timestamp >= lo && d.timestamp <= hi);
+  }, [BASE_DATA, SIDE_DATA, timeRange]);
+
   const availableRange = useMemo(() => {
-    if (!BASE_DATA.length) return null;
-    return [BASE_DATA[0].timestamp, BASE_DATA[BASE_DATA.length - 1].timestamp];
-  }, [BASE_DATA]);
+    if (!SIDE_DATA.length) return null;
+    return [SIDE_DATA[0].timestamp, SIDE_DATA[SIDE_DATA.length - 1].timestamp];
+  }, [SIDE_DATA]);
 
-  /**
-   * VIEWED_DATA: DATA further sliced to the zoom window.
-   * All chart memos depend on this — zoom is applied in one place.
-   * When zoomRange is null, VIEWED_DATA === DATA (no copy made).
-   */
   const VIEWED_DATA = useMemo(() => {
     if (!zoomRange) return DATA;
     var lo = zoomRange[0] < zoomRange[1] ? zoomRange[0] : zoomRange[1];
@@ -933,33 +658,32 @@ export default function Dashboard() {
     return DATA.filter(d => d.timestamp >= lo && d.timestamp <= hi);
   }, [DATA, zoomRange]);
 
-  // Only merge when Spread mode is active — no-op cost otherwise
-  const mergedViewedData = useMemo(() => {
-    if (selectedSide !== "Spread" || !VIEWED_DATA.length) return [];
-    return mergeAskBid(VIEWED_DATA);
-  }, [VIEWED_DATA, selectedSide]);
+  const displayData = VIEWED_DATA;
 
-  /**
-   * Single data layer consumed by every chart.
-   * Ask/Bid: raw VIEWED_DATA rows with standard field names.
-   * Spread:  normalizeSpreads() remaps spread_* → standard names so charts
-   *          need zero conditional logic.
-   */
-  const displayData = useMemo(() => {
-    if (selectedSide === "Spread") return normalizeSpreads(mergedViewedData);
-    return VIEWED_DATA;
-  }, [selectedSide, VIEWED_DATA, mergedViewedData]);
+  // Keep the custom time-slice picker initialized to the visible data range.
+  // Unlike Date Select, this picker can span multiple data days.
+  useEffect(() => {
+    if (!availableRange || !allDates.length || timeRange) return;
+
+    var startDate = selectedDate === "all" ? isoToDate(availableRange[0]) : selectedDate;
+    if (!allDates.includes(startDate)) startDate = allDates[0];
+
+    var startRange = getRangeForDate(SIDE_DATA, startDate);
+    var endRange = selectedDate === "all"
+      ? getRangeForDate(SIDE_DATA, isoToDate(availableRange[1]))
+      : startRange;
+
+    if (!startRange || !endRange) return;
+
+    setSliceStartDate(startDate);
+    setSliceEndDate(isoToDate(endRange[1]));
+    setSliceStartTime(isoToLocalTimeInputValue(startRange[0]));
+    setSliceEndTime(isoToLocalTimeInputValue(endRange[1]));
+    setTimeFilterError("");
+  }, [availableRange, allDates, selectedDate, SIDE_DATA, timeRange]);
 
 
   // ── Tab-gated, downsampled chart data ─────────────────────────────────────
-  /**
-   * Each tab's chart data is computed only when that tab is active (the
-   * activeTab guard returns null early for inactive tabs). This prevents
-   * Recharts from instantiating SVG trees for off-screen tabs.
-   *
-   * All memos depend on VIEWED_DATA so filters and zoom propagate through
-   * automatically.
-   */
 
   const overviewChartData = useMemo(() => {
     if (activeTab !== "overview" || !displayData.length) return null;
@@ -990,40 +714,10 @@ export default function Dashboard() {
 
 
   // ── Always-on derived values ───────────────────────────────────────────────
-  // These drive the header stat badges and Session Summary — they must always
-  // reflect the current VIEWED_DATA even when a tab is inactive.
 
-  // Last row of displayData — has standard field names in all three modes
   const latestDisplayRow = displayData.length
     ? displayData[displayData.length - 1]
     : (ALL_DATA.length ? ALL_DATA[ALL_DATA.length - 1] : null);
-
-  const askCount = useMemo(
-    () => VIEWED_DATA.filter(d => d.side === "Ask").length,
-    [VIEWED_DATA]
-  );
-  const bidCount = useMemo(
-    () => VIEWED_DATA.filter(d => d.side === "Bid").length,
-    [VIEWED_DATA]
-  );
-  const netMBO = useMemo(
-    () => VIEWED_DATA.reduce((s, d) => s + (d.mbo_ps || 0), 0),
-    [VIEWED_DATA]
-  );
-
-  const mboHeatData = useMemo(() => {
-    if (!latestDisplayRow) return [];
-    return Array.from({ length: 20 }, (_, i) => ({
-      level: "L" + (i + 1),
-      value: latestDisplayRow["mbo" + (i + 1)],
-    }));
-  }, [latestDisplayRow]);
-
-  const maxMboAbs = useMemo(
-    () => Math.max(...mboHeatData.map(x => Math.abs(x.value || 0)), 1),
-    [mboHeatData]
-  );
-
 
   // ── Early returns for loading / error ─────────────────────────────────────
   if (error)           return <div style={{ color: C.ask, padding: 40, fontFamily: "monospace", background: C.bg, minHeight: "100vh" }}>Failed to load data: {error}</div>;
@@ -1031,14 +725,7 @@ export default function Dashboard() {
   if (!latestDisplayRow) return null;
 
 
-  // ── Shared x-axis config (computed once per render) ────────────────────────
-  /**
-   * Pick the downsampled slice that is currently visible so ticks align
-   * with the actual rendered points. Falls back to VIEWED_DATA when no tab
-   * has computed its data yet (shouldn't normally happen).
-   */
-  // Use the full viewed data for tick generation, not the downsampled chart slice.
-  // This keeps x-axis labels stable when zooming.
+  // ── Shared x-axis config ───────────────────────────────────────────────────
   var activeSlice = (
     activeTab === "overview"       ? (overviewChartData?.price) :
     activeTab === "greeks"         ? greeksChartData :
@@ -1047,38 +734,17 @@ export default function Dashboard() {
     null
   ) || displayData;
 
-  // IMPORTANT:
-  // Ticks must come from the actual rendered chart data.
-  // If ticks come from VIEWED_DATA but the chart is downsampled,
-  // Recharts may not find matching x-values, so labels disappear.
   var timeTicks = getNiceTicksFromRenderedData(activeSlice);
-  // Switch to date+time labels when the visible span exceeds one day
   var activeSpanMs = activeSlice && activeSlice.length >= 2
     ? new Date(activeSlice[activeSlice.length - 1].timestamp).getTime()
       - new Date(activeSlice[0].timestamp).getTime()
     : 0;
   var tickFmt = activeSpanMs > 86400000 ? formatDayHourTick : formatHourTick;
   var timeAxisProps = buildTimeAxisProps(timeTicks, tickFmt);
-  /**
-   * Day separators for multi-session views. Only relevant when selectedDate
-   * is "all" and VIEWED_DATA spans more than one calendar date.
-   * Pass the full (non-downsampled) VIEWED_DATA so we don't miss the exact
-   * first-row boundary due to stride skipping.
-   */
   var daySeparators = getDaySeparators(VIEWED_DATA);
 
 
   // ── Zoom event handlers ────────────────────────────────────────────────────
-  /**
-   * These three handlers are attached only to the ES Price ComposedChart.
-   * Recharts' synthetic mouse events supply `e.activeLabel`, which is the
-   * x-axis value (timestamp string) of the hovered data point.
-   *
-   * Flow:
-   *   mousedown  → record dragStart
-   *   mousemove  → update dragCurrent (live ReferenceArea highlight)
-   *   mouseup    → commit zoomRange if drag spanned ≥ 2 distinct points
-   */
   function handleZoomMouseDown(e) {
     if (e?.activeLabel) {
       setDragStart(e.activeLabel);
@@ -1106,27 +772,84 @@ export default function Dashboard() {
     setDragCurrent(null);
   }
 
+  function setSliceStartDateFromInput(date) {
+    var range = getRangeForDate(SIDE_DATA, date);
+    if (!range) return;
+
+    setSliceStartDate(date);
+    setSliceStartTime(isoToLocalTimeInputValue(range[0]));
+
+    // Keep the range valid. If the previous end date is before the new start,
+    // move the end date to the same day and use that day's close.
+    if (!sliceEndDate || sliceEndDate < date) {
+      setSliceEndDate(date);
+      setSliceEndTime(isoToLocalTimeInputValue(range[1]));
+    }
+
+    setTimeFilterError("");
+  }
+
+  function setSliceEndDateFromInput(date) {
+    var range = getRangeForDate(SIDE_DATA, date);
+    if (!range) return;
+
+    setSliceEndDate(date);
+    setSliceEndTime(isoToLocalTimeInputValue(range[1]));
+
+    // Keep the range valid. If the previous start date is after the new end,
+    // move the start date to the same day and use that day's open.
+    if (!sliceStartDate || sliceStartDate > date) {
+      setSliceStartDate(date);
+      setSliceStartTime(isoToLocalTimeInputValue(range[0]));
+    }
+
+    setTimeFilterError("");
+  }
+
   function clearTimeFilter() {
     setTimeRange(null);
-    setTimeStartInput("");
-    setTimeEndInput("");
     setTimeFilterError("");
     resetZoom();
+
+    var startDate = selectedDate === "all" ? isoToDate(availableRange?.[0]) : selectedDate;
+    if (!startDate || !allDates.includes(startDate)) startDate = allDates[0];
+
+    var startRange = getRangeForDate(SIDE_DATA, startDate);
+    var endRange = selectedDate === "all" && availableRange
+      ? getRangeForDate(SIDE_DATA, isoToDate(availableRange[1]))
+      : startRange;
+
+    if (startRange && endRange) {
+      setSliceStartDate(startDate);
+      setSliceEndDate(isoToDate(endRange[1]));
+      setSliceStartTime(isoToLocalTimeInputValue(startRange[0]));
+      setSliceEndTime(isoToLocalTimeInputValue(endRange[1]));
+    }
+  }
+
+  function fillFullAvailableTimeRange() {
+    if (!availableRange) return;
+
+    setSliceStartDate(isoToDate(availableRange[0]));
+    setSliceEndDate(isoToDate(availableRange[1]));
+    setSliceStartTime(isoToLocalTimeInputValue(availableRange[0]));
+    setSliceEndTime(isoToLocalTimeInputValue(availableRange[1]));
+    setTimeFilterError("");
   }
 
   function applyTimeFilter() {
     setTimeFilterError("");
 
     if (!availableRange) {
-      setTimeFilterError("No data is available for the current date/side filters.");
+      setTimeFilterError("No data is available for the current side filter.");
       return;
     }
 
-    var startIso = localInputValueToIso(timeStartInput);
-    var endIso   = localInputValueToIso(timeEndInput);
+    var startIso = localDateAndTimeToIso(sliceStartDate, sliceStartTime);
+    var endIso = localDateAndTimeToIso(sliceEndDate, sliceEndTime);
 
     if (!startIso || !endIso) {
-      setTimeFilterError("Pick both a start and end time.");
+      setTimeFilterError("Pick a start day/time and end day/time.");
       return;
     }
 
@@ -1147,35 +870,41 @@ export default function Dashboard() {
       return;
     }
 
-    var rowsInRange = BASE_DATA.filter(d => d.timestamp >= lo && d.timestamp <= hi);
+    var rowsInRange = SIDE_DATA.filter(d => d.timestamp >= lo && d.timestamp <= hi);
     if (!rowsInRange.length) {
       setTimeFilterError("No rows exist in that window. It may fall inside a session gap.");
       return;
     }
 
+    // Time slice and date filter are mutually exclusive.
+    setSelectedDate("all");
     setTimeRange([lo, hi]);
     resetZoom();
   }
 
-  function fillFullAvailableTimeRange() {
-    if (!availableRange) return;
-    setTimeStartInput(isoToLocalInputValue(availableRange[0]));
-    setTimeEndInput(isoToLocalInputValue(availableRange[1]));
-    setTimeFilterError("");
-  }
-
-  /** Changing the date resets zoom and manual time filters — old timestamps don't map to new session */
   function handleDateChange(date) {
+    // Date filter and time slice are mutually exclusive.
     setSelectedDate(date);
     setTimeRange(null);
-    setTimeStartInput("");
-    setTimeEndInput("");
     setTimeFilterError("");
     resetZoom();
+
+    var range = date === "all"
+      ? (availableRange ? availableRange : null)
+      : getRangeForDate(SIDE_DATA, date);
+
+    if (range) {
+      setSliceStartDate(isoToDate(range[0]));
+      setSliceEndDate(isoToDate(range[1]));
+      setSliceStartTime(isoToLocalTimeInputValue(range[0]));
+      setSliceEndTime(isoToLocalTimeInputValue(range[1]));
+    }
   }
 
   function handleSideChange(side) {
     setSelectedSide(side);
+    setTimeRange(null);
+    setTimeFilterError("");
     resetZoom();
   }
 
@@ -1187,6 +916,11 @@ export default function Dashboard() {
       style: { cursor: isDragging ? "col-resize" : "crosshair", userSelect: "none" },
     };
   }
+
+  var dragLo = (dragStart && dragCurrent)
+    ? (dragStart < dragCurrent ? dragStart : dragCurrent) : null;
+  var dragHi = (dragStart && dragCurrent)
+    ? (dragStart < dragCurrent ? dragCurrent : dragStart) : null;
 
   function renderZoomSelection(yAxisId) {
     if (!isDragging || !dragLo || !dragHi) return null;
@@ -1203,7 +937,6 @@ export default function Dashboard() {
     return <ReferenceArea {...props} />;
   }
 
-  /** Human-readable label for the zoom window duration shown in the header */
   function zoomDurationLabel() {
     if (!zoomRange || !displayData.length) return "";
     var secs = Math.round(
@@ -1222,12 +955,6 @@ export default function Dashboard() {
   var viewedRows  = VIEWED_DATA.length.toLocaleString();
   var downsampled = VIEWED_DATA.length > DS.line;
 
-  // Normalise drag endpoints so dragLo is always the earlier timestamp
-  var dragLo = (dragStart && dragCurrent)
-    ? (dragStart < dragCurrent ? dragStart : dragCurrent) : null;
-  var dragHi = (dragStart && dragCurrent)
-    ? (dragStart < dragCurrent ? dragCurrent : dragStart) : null;
-
 
   // ── JSX ────────────────────────────────────────────────────────────────────
   return (
@@ -1237,12 +964,7 @@ export default function Dashboard() {
       padding: "24px 28px", boxSizing: "border-box",
     }}>
 
-      {/* ════════════════════════════════════════════════════════════════════
-          HEADER
-          Shows: title, latest timestamp, row count, key stat badges.
-          Stat badges (ES Price, SPX Price, Call Delta, Call Gamma) give the
-          researcher an at-a-glance orientation before reading any chart.
-      ════════════════════════════════════════════════════════════════════ */}
+      {/* HEADER */}
       <div style={{
         display: "flex", alignItems: "flex-start", justifyContent: "space-between",
         marginBottom: 14, flexWrap: "wrap", gap: 16,
@@ -1264,7 +986,7 @@ export default function Dashboard() {
               <span style={{ color: C.muted }}>· charts show {DS.line} pts (downsampled)</span>
             )}
             {timeRange && (
-              <span style={{ color: C.accent3 }}>· time slice active</span>
+              <span style={{ color: C.accent3 }}>· time slice active · date set to All</span>
             )}
             {isZoomed && (
               <span style={{ color: C.accent5 }}>· {zoomDurationLabel()}</span>
@@ -1272,7 +994,6 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Key stat badges — always reflect the current zoom/filter/mode view */}
         <div style={{ display: "flex", gap: 20, alignItems: "flex-end", flexWrap: "wrap" }}>
           <StatBadge label="ES Price"   value={latestDisplayRow?.esPrice   != null ? latestDisplayRow.esPrice.toFixed(1)   : "—"} color={C.accent1} />
           <StatBadge label="SPX Price"  value={latestDisplayRow?.spxPrice  != null ? latestDisplayRow.spxPrice.toFixed(1)  : "—"} color={C.accent4} />
@@ -1281,14 +1002,9 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* ════════════════════════════════════════════════════════════════════
-          FILTER BAR
-          Date pills → Side pills → (conditional) Reset Zoom button.
-          A thin divider separates each group visually.
-      ════════════════════════════════════════════════════════════════════ */}
+      {/* FILTER BAR */}
       <div style={{ display: "flex", gap: 16, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
 
-        {/* Date filter — pills generated from allDates (auto-updates with data) */}
         <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
           <span style={{ fontSize: 9, color: C.textDim, letterSpacing: "0.1em", textTransform: "uppercase" }}>Date</span>
           <FilterPill label="All" active={selectedDate === "all"} onClick={() => handleDateChange("all")} color={C.accent1} />
@@ -1303,7 +1019,6 @@ export default function Dashboard() {
 
         <div style={{ width: 1, height: 16, background: C.border }} />
 
-        {/* Side / Spread filter */}
         <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
           <span style={{ fontSize: 9, color: C.textDim, letterSpacing: "0.1em", textTransform: "uppercase" }}>View</span>
           {["Ask", "Bid", "Spread"].map(s => (
@@ -1317,32 +1032,98 @@ export default function Dashboard() {
 
         <div style={{ width: 1, height: 16, background: C.border }} />
 
-        {/* Manual time-slice filter — local browser time, validated against available rows */}
+        {/* Custom data-aware time-slice range picker */}
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
           <span style={{ fontSize: 9, color: C.textDim, letterSpacing: "0.1em", textTransform: "uppercase" }}>Time Slice</span>
-          <input
-            type="datetime-local"
-            step="1"
-            value={timeStartInput}
-            onChange={e => setTimeStartInput(e.target.value)}
+
+          <span style={{ fontSize: 9, color: C.textDim, letterSpacing: "0.1em", textTransform: "uppercase" }}>From</span>
+          <select
+            value={sliceStartDate}
+            onChange={e => setSliceStartDateFromInput(e.target.value)}
             style={{
-              background: "#0b0d15", color: C.text, border: "1px solid " + C.border,
-              borderRadius: 6, padding: "4px 7px", fontSize: 10,
-              fontFamily: "'DM Mono', monospace", colorScheme: "dark",
+              background: "#0b0d15",
+              color: C.text,
+              border: "1px solid " + C.border,
+              borderRadius: 6,
+              padding: "4px 7px",
+              fontSize: 10,
+              fontFamily: "'DM Mono', monospace",
+              colorScheme: "dark",
+            }}
+          >
+            {allDates.map(d => {
+              var dt = new Date(d + "T12:00:00Z");
+              var label = dt.toLocaleDateString("en-US", {
+                month: "short",
+                day: "numeric",
+                timeZone: "UTC",
+              });
+              return <option key={d} value={d}>{label}</option>;
+            })}
+          </select>
+
+          <input
+            type="time"
+            step="1"
+            value={sliceStartTime}
+            onChange={e => setSliceStartTime(e.target.value)}
+            style={{
+              background: "#0b0d15",
+              color: C.text,
+              border: "1px solid " + C.border,
+              borderRadius: 6,
+              padding: "4px 7px",
+              fontSize: 10,
+              fontFamily: "'DM Mono', monospace",
+              colorScheme: "dark",
             }}
           />
+
           <span style={{ color: C.textDim, fontSize: 10 }}>→</span>
-          <input
-            type="datetime-local"
-            step="1"
-            value={timeEndInput}
-            onChange={e => setTimeEndInput(e.target.value)}
+
+          <span style={{ fontSize: 9, color: C.textDim, letterSpacing: "0.1em", textTransform: "uppercase" }}>To</span>
+          <select
+            value={sliceEndDate}
+            onChange={e => setSliceEndDateFromInput(e.target.value)}
             style={{
-              background: "#0b0d15", color: C.text, border: "1px solid " + C.border,
-              borderRadius: 6, padding: "4px 7px", fontSize: 10,
-              fontFamily: "'DM Mono', monospace", colorScheme: "dark",
+              background: "#0b0d15",
+              color: C.text,
+              border: "1px solid " + C.border,
+              borderRadius: 6,
+              padding: "4px 7px",
+              fontSize: 10,
+              fontFamily: "'DM Mono', monospace",
+              colorScheme: "dark",
+            }}
+          >
+            {allDates.map(d => {
+              var dt = new Date(d + "T12:00:00Z");
+              var label = dt.toLocaleDateString("en-US", {
+                month: "short",
+                day: "numeric",
+                timeZone: "UTC",
+              });
+              return <option key={d} value={d}>{label}</option>;
+            })}
+          </select>
+
+          <input
+            type="time"
+            step="1"
+            value={sliceEndTime}
+            onChange={e => setSliceEndTime(e.target.value)}
+            style={{
+              background: "#0b0d15",
+              color: C.text,
+              border: "1px solid " + C.border,
+              borderRadius: 6,
+              padding: "4px 7px",
+              fontSize: 10,
+              fontFamily: "'DM Mono', monospace",
+              colorScheme: "dark",
             }}
           />
+
           <button
             onClick={applyTimeFilter}
             style={{
@@ -1356,6 +1137,7 @@ export default function Dashboard() {
           >
             Apply
           </button>
+
           <button
             onClick={fillFullAvailableTimeRange}
             style={{
@@ -1368,6 +1150,7 @@ export default function Dashboard() {
           >
             Fill Range
           </button>
+
           {(timeRange || timeFilterError) && (
             <button
               onClick={clearTimeFilter}
@@ -1382,11 +1165,13 @@ export default function Dashboard() {
               Clear
             </button>
           )}
+
           {availableRange && !timeFilterError && (
             <span style={{ fontSize: 9, color: C.muted }}>
               available {formatDateTimeShort(availableRange[0])} → {formatDateTimeShort(availableRange[1])}
             </span>
           )}
+
           {timeFilterError && (
             <span style={{ fontSize: 9, color: C.ask, maxWidth: 520 }}>
               {timeFilterError}
@@ -1394,7 +1179,6 @@ export default function Dashboard() {
           )}
         </div>
 
-        {/* Reset Zoom — only visible when a zoom is active */}
         {isZoomed && (
           <>
             <div style={{ width: 1, height: 16, background: C.border }} />
@@ -1415,11 +1199,7 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* ════════════════════════════════════════════════════════════════════
-          TAB BAR
-          Four tabs: Overview · Greeks · Microstructure · Order Book.
-          The active tab is highlighted with accent1; inactive tabs are dim.
-      ════════════════════════════════════════════════════════════════════ */}
+      {/* TAB BAR */}
       <div style={{ display: "flex", gap: 2, marginBottom: 18, borderBottom: "1px solid " + C.border }}>
         {tabs.map(t => (
           <button
@@ -1440,27 +1220,16 @@ export default function Dashboard() {
         ))}
       </div>
 
-      {/* Empty state — shown when filters produce no matching rows */}
       {!VIEWED_DATA.length && (
         <div style={{ color: C.textDim, padding: "40px 0", textAlign: "center", fontSize: 13 }}>
           No data matches the current filters.
         </div>
       )}
 
-
-      {/* ════════════════════════════════════════════════════════════════════
-          OVERVIEW TAB
-          Grid: [ES+SPX Price (span 2)] [Delta Evolution]
-                [MBO Net Flow (span 2)]  [Session Summary]
-
-          The ES Price chart doubles as the zoom controller: mouse-down/move/up
-          draw an amber ReferenceArea; on mouse-up the selection is committed to
-          zoomRange, which propagates through VIEWED_DATA to all other charts.
-      ════════════════════════════════════════════════════════════════════ */}
+      {/* OVERVIEW TAB */}
       {activeTab === "overview" && overviewChartData && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}>
 
-          {/* ── ES / SPX Price — zoom controller ── */}
           <Panel
             title="Underlying Price"
             subtitle={isZoomed ? "ES vs SPX · zoomed" : "ES vs SPX · drag any time-series chart to zoom"}
@@ -1478,9 +1247,7 @@ export default function Dashboard() {
                 <Legend {...LEGEND_PROPS} />
                 <Line type="monotone" dataKey="esPrice"  stroke={C.accent1} dot={false} strokeWidth={1.5} name="ES Price" />
                 <Line type="monotone" dataKey="spxPrice" stroke={C.accent4} dot={false} strokeWidth={1}   strokeDasharray="4 2" name="SPX Price" />
-                {/* Live drag-selection amber highlight */}
                 {renderZoomSelection()}
-                {/* Session boundary separators */}
                 {renderDaySeparators(daySeparators)}
               </ComposedChart>
             </ResponsiveContainer>
@@ -1491,7 +1258,6 @@ export default function Dashboard() {
             )}
           </Panel>
 
-          {/* ── Delta Evolution ── */}
           <Panel title={<GreekLabel name="delta" label="Delta Evolution" />} subtitle="Call & Put delta vs time">
             <ResponsiveContainer width="100%" height={200}>
               <AreaChart data={overviewChartData.delta} {...getZoomChartProps()}>
@@ -1509,8 +1275,7 @@ export default function Dashboard() {
             </ResponsiveContainer>
           </Panel>
 
-          {/* ── MBO Net Flow ── */}
-          <Panel title="MBO Net Flow" subtitle="Stacking / pulling net signal per second" span={2}>
+          <Panel title="MBO Net Flow" subtitle="Stacking / pulling net signal per second" span={3}>
             <ResponsiveContainer width="100%" height={160}>
               <BarChart data={overviewChartData.mboBar} {...getZoomChartProps()}>
                 <CartesianGrid {...GRID_PROPS} />
@@ -1529,43 +1294,10 @@ export default function Dashboard() {
             </ResponsiveContainer>
           </Panel>
 
-          {/* ── Session Summary ── */}
-          <Panel title="Session Summary" subtitle="Current view snapshot">
-            <div style={{ display: "flex", flexDirection: "column", gap: 12, justifyContent: "center", flex: 1 }}>
-              <StatBadge
-                label="Net MBO Flow"
-                value={(netMBO > 0 ? "+" : "") + netMBO.toFixed(0)}
-                color={netMBO > 0 ? C.bid : C.ask}
-              />
-              <div style={{ display: "flex", gap: 20 }}>
-                <StatBadge label="Ask rows" value={askCount} color={C.ask} />
-                <StatBadge label="Bid rows" value={bidCount} color={C.bid} />
-              </div>
-              <div style={{ fontSize: 10, color: C.textDim }}>
-                <GreekLabel name="gamma" label="Gamma" /> latest:{" "}
-                <span style={{ color: C.accent4 }}>
-                  {latestDisplayRow?.callGamma != null ? latestDisplayRow.callGamma.toFixed(6) : "—"}
-                </span>
-              </div>
-              <div style={{ fontSize: 10, color: C.textDim }}>
-                <GreekLabel name="vega" label="Vega" /> latest:{" "}
-                <span style={{ color: C.accent3 }}>
-                  {latestDisplayRow?.callVega != null ? latestDisplayRow.callVega.toFixed(3) : "—"}
-                </span>
-              </div>
-            </div>
-          </Panel>
-
         </div>
       )}
 
-
-      {/* ════════════════════════════════════════════════════════════════════
-          GREEKS TAB
-          2-column grid of time-series charts for all eight Greeks.
-          Each chart shows the call (solid) and put (dashed) variant.
-          All 7 charts share greeksChartData — one downsample allocation.
-      ════════════════════════════════════════════════════════════════════ */}
+      {/* GREEKS TAB */}
       {activeTab === "greeks" && greeksChartData && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 14 }}>
 
@@ -1688,13 +1420,7 @@ export default function Dashboard() {
         </div>
       )}
 
-
-      {/* ════════════════════════════════════════════════════════════════════
-          MICROSTRUCTURE TAB
-          3-column grid:
-            [MBO Net Flow (span 3)]
-            [Delta vs MBO Scatter (span 2)]  [Ask/Bid Distribution]
-      ════════════════════════════════════════════════════════════════════ */}
+      {/* MICROSTRUCTURE TAB */}
       {activeTab === "microstructure" && microChartData && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}>
 
@@ -1717,8 +1443,7 @@ export default function Dashboard() {
             </ResponsiveContainer>
           </Panel>
 
-          {/* Scatter: ES Price (x) vs Call Delta (y), coloured by MBO direction */}
-          <Panel title={<GreekLabel name="delta" label="Delta vs MBO Signal" />} subtitle="Call delta coloured by net flow direction" span={2}>
+          <Panel title={<GreekLabel name="delta" label="Delta vs MBO Signal" />} subtitle="Call delta coloured by net flow direction" span={3}>
             <ResponsiveContainer width="100%" height={200}>
               <ScatterChart>
                 <CartesianGrid {...GRID_PROPS} />
@@ -1748,79 +1473,44 @@ export default function Dashboard() {
             </div>
           </Panel>
 
-          {/* Ask / Bid row count breakdown with progress bars */}
-          <Panel title="Ask / Bid Distribution" subtitle="Row counts by side">
-            <div style={{ display: "flex", flexDirection: "column", gap: 12, justifyContent: "center", flex: 1 }}>
-              {["Ask", "Bid"].map(side => {
-                var count = side === "Ask" ? askCount : bidCount;
-                var pct   = VIEWED_DATA.length ? (count / VIEWED_DATA.length) * 100 : 0;
-                return (
-                  <div key={side}>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 4 }}>
-                      <span style={{ color: side === "Ask" ? C.ask : C.bid }}>{side}</span>
-                      <span style={{ color: C.text }}>{count.toLocaleString()} ({pct.toFixed(0)}%)</span>
-                    </div>
-                    <div style={{ background: C.border, borderRadius: 3, height: 5 }}>
-                      <div style={{ height: "100%", width: pct + "%", background: side === "Ask" ? C.ask : C.bid, borderRadius: 3 }} />
-                    </div>
-                  </div>
-                );
-              })}
-              <div style={{ marginTop: 6, fontSize: 10, color: C.textDim }}>
-                Net flow:{" "}
-                <span style={{ color: netMBO > 0 ? C.bid : C.ask, fontWeight: 700 }}>
-                  {(netMBO > 0 ? "+" : "") + netMBO.toFixed(0)}
-                </span>
-              </div>
-            </div>
-          </Panel>
-
         </div>
       )}
 
-
-      {/* ════════════════════════════════════════════════════════════════════
-          ORDER BOOK TAB
-          [MBO Level Snapshot — L1–L20 horizontal bar (span 2)]
-          [10 × paired line charts for level pairs L1/L2 … L19/L20]
-
-          The snapshot bar chart uses the `latestDisplayRow` (not downsampled)
-          so values are always exact for the most recent second.
-          The pair line charts share orderBookChartData (one downsample).
-      ════════════════════════════════════════════════════════════════════ */}
+      {/* ORDER BOOK TAB */}
       {activeTab === "order book" && orderBookChartData && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 14 }}>
 
-          <Panel title="MBO Level Snapshot" subtitle="Net order quantity by level — latest second (L1–L20)" span={2}>
-            <ResponsiveContainer width="100%" height={260}>
-              <BarChart data={mboHeatData} layout="vertical">
-                <CartesianGrid {...GRID_PROPS} horizontal={false} />
-                <XAxis
-                  type="number"
-                  tick={{ fill: C.textDim, fontSize: 9 }}
-                  axisLine={{ stroke: C.border }} tickLine={false}
-                />
-                <YAxis
-                  dataKey="level" type="category"
-                  tick={{ fill: C.textDim, fontSize: 9 }} width={28}
-                  axisLine={{ stroke: C.border }} tickLine={false}
-                />
-                <ReferenceLine x={0} stroke={C.muted} strokeWidth={1} />
+          <Panel title="All MBO Levels" subtitle="L1–L20 net order flow across the selected timeframe" span={2}>
+            <ResponsiveContainer width="100%" height={330}>
+              <LineChart data={orderBookChartData} {...getZoomChartProps()}>
+                <CartesianGrid {...GRID_PROPS} />
+                <XAxis {...timeAxisProps} />
+                <YAxis {...buildYAxisProps(58)} />
+                <ReferenceLine y={0} stroke={C.muted} strokeWidth={1} />
                 <Tooltip content={<CustomTooltip />} />
-                <Bar dataKey="value" name="Net Order Size">
-                  {mboHeatData.map((d, i) => (
-                    <Cell
-                      key={i}
-                      fill={d.value >= 0 ? C.accent1 : C.accent2}
-                      opacity={0.4 + (Math.abs(d.value || 0) / maxMboAbs) * 0.6}
-                    />
-                  ))}
-                </Bar>
-              </BarChart>
+                <Legend {...LEGEND_PROPS} />
+                {MBO_LEVEL_KEYS.map((key, idx) => (
+                  <Line
+                    key={key}
+                    type="monotone"
+                    dataKey={key}
+                    stroke={MBO_LINE_COLORS[idx % MBO_LINE_COLORS.length]}
+                    dot={false}
+                    strokeWidth={1}
+                    opacity={0.82}
+                    name={"L" + (idx + 1)}
+                    connectNulls
+                  />
+                ))}
+                {renderZoomSelection()}
+                {renderDaySeparators(daySeparators)}
+              </LineChart>
             </ResponsiveContainer>
+            <div style={{ fontSize: 9, color: C.muted, letterSpacing: "0.06em" }}>
+              SHOWS EVERY MBO LEVEL IN THE CURRENT DATE / TIME SLICE / ZOOM WINDOW
+            </div>
           </Panel>
 
-          {/* Paired time-series for each adjacent level pair */}
           {[
             ["mbo1","mbo2"],["mbo3","mbo4"],["mbo5","mbo6"],["mbo7","mbo8"],["mbo9","mbo10"],
             ["mbo11","mbo12"],["mbo13","mbo14"],["mbo15","mbo16"],["mbo17","mbo18"],["mbo19","mbo20"],
@@ -1851,7 +1541,6 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* ── Footer ── */}
       <div style={{ marginTop: 20, fontSize: 9, color: C.textDim, textAlign: "right", letterSpacing: "0.08em" }}>
         SPX OPTIONS ANALYTICS · DATA PROVIDED BY DR. MOREHEAD
       </div>
