@@ -1,10 +1,10 @@
 {
   "files": {
-    "main.js": "/predicting-options/static/js/main.67dfe77b.js",
+    "main.js": "/predicting-options/static/js/main.fb63ec89.js",
     "index.html": "/predicting-options/index.html",
-    "main.67dfe77b.js.map": "/predicting-options/static/js/main.67dfe77b.js.map"
+    "main.fb63ec89.js.map": "/predicting-options/static/js/main.fb63ec89.js.map"
   },
   "entrypoints": [
-    "static/js/main.67dfe77b.js"
+    "static/js/main.fb63ec89.js"
   ]
 }
