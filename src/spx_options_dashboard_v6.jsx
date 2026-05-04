@@ -974,7 +974,7 @@ export default function Dashboard() {
             SPX / ES Options Analytics
           </div>
           <h1 style={{ margin: 0, fontSize: 24, fontWeight: 800, color: "#fff", letterSpacing: "-0.03em" }}>
-            S&amp;P 500 Derivative
+            SPX Options Data
           </h1>
           <div style={{ fontSize: 10, color: C.textDim, marginTop: 3, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <span>{formatTimeTick(latestDisplayRow?.timestamp)}</span>
